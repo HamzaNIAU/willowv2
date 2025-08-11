@@ -1,6 +1,6 @@
 import json
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from agentpress.tool import ToolResult
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
@@ -11,10 +11,11 @@ from utils.logger import logger
 
 
 class MCPToolExecutor:
-    def __init__(self, custom_tools: Dict[str, Dict[str, Any]], tool_wrapper=None):
+    def __init__(self, custom_tools: Dict[str, Dict[str, Any]], tool_wrapper=None, session_id: Optional[str] = None):
         self.mcp_manager = mcp_service
         self.custom_tools = custom_tools
         self.tool_wrapper = tool_wrapper
+        self.session_id = session_id
     
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> ToolResult:
         logger.info(f"Executing MCP tool {tool_name} with arguments {arguments}")
@@ -67,8 +68,6 @@ class MCPToolExecutor:
                 logger.error(f"Failed to resolve Composio profile {profile_id}: {str(e)}")
                 return self._create_error_result(f"Failed to resolve Composio profile: {str(e)}")
                 
-        elif custom_type == 'pipedream':
-            return await self._execute_pipedream_tool(tool_name, arguments, tool_info)
         elif custom_type == 'social-media':
             return await self._execute_social_media_tool(tool_name, arguments, tool_info)
         elif custom_type == 'sse':
@@ -89,7 +88,7 @@ class MCPToolExecutor:
             # Import YouTube tool
             from agent.tools.youtube_tool import YouTubeTool
             
-            # Get user_id from tool_wrapper's config (passed during agent initialization)
+            # Get user_id from config
             user_id = None
             if self.tool_wrapper and hasattr(self.tool_wrapper, 'mcp_configs'):
                 for config in self.tool_wrapper.mcp_configs:
@@ -104,6 +103,20 @@ class MCPToolExecutor:
             if not user_id:
                 return self._create_error_result("Missing user_id for YouTube tool")
             
+            # Retrieve JWT token from session if available
+            jwt_token = None
+            if self.session_id:
+                try:
+                    from utils.session_manager import SessionManager
+                    session_data = await SessionManager.get_session(self.session_id)
+                    if session_data:
+                        jwt_token = session_data.get("jwt_token")
+                        logger.debug(f"Retrieved JWT from session {self.session_id} for YouTube tool")
+                    else:
+                        logger.warning(f"Session {self.session_id} not found for YouTube tool")
+                except Exception as e:
+                    logger.error(f"Failed to retrieve JWT from session: {e}")
+            
             # Extract channel IDs from all YouTube MCPs
             channel_ids = []
             if self.tool_wrapper and hasattr(self.tool_wrapper, 'mcp_configs'):
@@ -116,8 +129,8 @@ class MCPToolExecutor:
                                 channel_ids.append(channel_id)
             
             try:
-                # Create YouTube tool instance
-                youtube_tool = YouTubeTool(user_id=user_id, channel_ids=channel_ids)
+                # Create YouTube tool instance with JWT token
+                youtube_tool = YouTubeTool(user_id=user_id, channel_ids=channel_ids, jwt_token=jwt_token)
                 
                 # Map tool names to methods
                 if tool_name == 'youtube_authenticate':
@@ -147,53 +160,6 @@ class MCPToolExecutor:
                 return self._create_error_result(f"Error executing YouTube tool: {str(e)}")
         else:
             return self._create_error_result(f"Unsupported social media platform: {platform}")
-    
-    async def _execute_pipedream_tool(self, tool_name: str, arguments: Dict[str, Any], tool_info: Dict[str, Any]) -> ToolResult:
-        custom_config = tool_info['custom_config']
-        original_tool_name = tool_info['original_name']
-        
-        external_user_id = await self._resolve_external_user_id(custom_config)
-        if not external_user_id:
-            return self._create_error_result("No external_user_id available")
-        
-        app_slug = custom_config.get('app_slug')
-        oauth_app_id = custom_config.get('oauth_app_id')
-        
-        try:
-            import os
-            from pipedream import connection_service
-            
-            access_token = await connection_service._ensure_access_token()
-            
-            project_id = os.getenv("PIPEDREAM_PROJECT_ID")
-            environment = os.getenv("PIPEDREAM_X_PD_ENVIRONMENT", "development")
-            
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "x-pd-project-id": project_id,
-                "x-pd-environment": environment,
-                "x-pd-external-user-id": external_user_id,
-                "x-pd-app-slug": app_slug,
-            }
-            
-            if hasattr(connection_service, 'rate_limit_token') and connection_service.rate_limit_token:
-                headers["x-pd-rate-limit"] = connection_service.rate_limit_token
-            
-            if oauth_app_id:
-                headers["x-pd-oauth-app-id"] = oauth_app_id
-            
-            url = "https://remote.mcp.pipedream.net"
-            
-            async with asyncio.timeout(30):
-                async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, _):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        await session.initialize()
-                        result = await session.call_tool(original_tool_name, arguments)
-                        return self._create_success_result(self._extract_content(result))
-                        
-        except Exception as e:
-            logger.error(f"Error executing Pipedream MCP tool: {str(e)}")
-            return self._create_error_result(f"Error executing Pipedream tool: {str(e)}")
     
     async def _execute_sse_tool(self, tool_name: str, arguments: Dict[str, Any], tool_info: Dict[str, Any]) -> ToolResult:
         custom_config = tool_info['custom_config']

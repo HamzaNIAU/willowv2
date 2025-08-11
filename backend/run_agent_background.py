@@ -10,6 +10,7 @@ from typing import Optional
 from services import redis
 from agent.run import run_agent
 from utils.logger import logger, structlog
+from utils.session_manager import SessionManager
 import dramatiq
 import uuid
 from agentpress.thread_manager import ThreadManager
@@ -23,9 +24,10 @@ from utils.retry import retry
 import sentry_sdk
 from typing import Dict, Any
 
-redis_host = os.getenv('REDIS_HOST', 'redis')
+redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_broker = RedisBroker(host=redis_host, port=redis_port, middleware=[dramatiq.middleware.AsyncIO()])
+logger.info(f"Initialized Redis broker for worker at {redis_host}:{redis_port}")
 
 dramatiq.set_broker(redis_broker)
 
@@ -67,6 +69,7 @@ async def run_agent_background(
     is_agent_builder: Optional[bool] = False,
     target_agent_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    session_id: Optional[str] = None,  # Changed from jwt_token to session_id
 ):
     """Run the agent in the background using Redis for state."""
     structlog.contextvars.clear_contextvars()
@@ -103,6 +106,16 @@ async def run_agent_background(
 
     sentry.sentry.set_tag("thread_id", thread_id)
 
+    # Retrieve session data to get jwt_token
+    jwt_token = None
+    if session_id:
+        session_data = await SessionManager.get_session(session_id)
+        if session_data:
+            jwt_token = session_data.get("jwt_token")
+            logger.info(f"Retrieved session {session_id} for agent run {agent_run_id}")
+        else:
+            logger.warning(f"Session {session_id} not found for agent run {agent_run_id}")
+
     logger.info(f"Starting background agent run: {agent_run_id} for thread: {thread_id} (Instance: {instance_id})")
     logger.info({
         "model_name": model_name,
@@ -113,6 +126,8 @@ async def run_agent_background(
         "agent_config": agent_config,
         "is_agent_builder": is_agent_builder,
         "target_agent_id": target_agent_id,
+        "has_session": bool(session_id),
+        "has_jwt": bool(jwt_token)
     })
     logger.info(f"🚀 Using model: {model_name} (thinking: {enable_thinking}, reasoning_effort: {reasoning_effort})")
     if agent_config:
@@ -182,7 +197,8 @@ async def run_agent_background(
             agent_config=agent_config,
             trace=trace,
             is_agent_builder=is_agent_builder,
-            target_agent_id=target_agent_id
+            target_agent_id=target_agent_id,
+            session_id=session_id  # Pass session_id instead of jwt_token
         )
 
         final_status = "running"

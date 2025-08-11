@@ -16,6 +16,7 @@ from services.supabase import DBConnection
 from services import redis
 from utils.auth_utils import get_current_user_id_from_jwt, get_user_id_from_stream_auth, verify_thread_access, verify_admin_api_key
 from utils.logger import logger, structlog
+from utils.session_manager import SessionManager
 from services.billing import check_billing_status, can_use_model
 from utils.config import config
 from sandbox.sandbox import create_sandbox, delete_sandbox, get_or_start_sandbox
@@ -32,6 +33,7 @@ redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_broker = RedisBroker(host=redis_host, port=redis_port, middleware=[dramatiq.middleware.AsyncIO()])
 dramatiq.set_broker(redis_broker)
+logger.info(f"Initialized Redis broker for API at {redis_host}:{redis_port}")
 
 from .config_helper import extract_agent_config, build_unified_config, extract_tools_for_agent_run, get_mcp_configs
 from .utils import check_agent_run_limit
@@ -302,9 +304,17 @@ async def get_agent_run_with_access_check(client, agent_run_id: str, user_id: st
 async def start_agent(
     thread_id: str,
     body: AgentStartRequest = Body(...),
+    request: Request = None,
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
     """Start an agent for a specific thread in the background."""
+    # Extract JWT token from request
+    jwt_token = ""
+    if request:
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            jwt_token = auth_header.split(' ')[1]
+    
     structlog.contextvars.bind_contextvars(
         thread_id=thread_id,
     )
@@ -546,6 +556,7 @@ async def start_agent(
         is_agent_builder=is_agent_builder,
         target_agent_id=target_agent_id,
         request_id=request_id,
+        jwt_token=jwt_token,  # Pass JWT token for YouTube API calls
     )
 
     return {"agent_run_id": agent_run_id, "status": "running"}
@@ -995,6 +1006,7 @@ async def generate_and_update_project_name(project_id: str, prompt: str):
 
 @router.post("/agent/initiate", response_model=InitiateAgentResponse)
 async def initiate_agent_with_files(
+    request: Request,
     prompt: str = Form(...),
     model_name: Optional[str] = Form(None),  # Default to None to use config.MODEL_TO_USE
     enable_thinking: Optional[bool] = Form(False),
@@ -1015,6 +1027,12 @@ async def initiate_agent_with_files(
     global instance_id # Ensure instance_id is accessible
     if not instance_id:
         raise HTTPException(status_code=500, detail="Agent API not initialized with instance ID")
+
+    # Extract JWT token from request
+    jwt_token = ""
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        jwt_token = auth_header.split(' ')[1]
 
     # Use model from config if not specified in the request
     logger.info(f"Original model_name from request: {model_name}")
@@ -1329,18 +1347,42 @@ async def initiate_agent_with_files(
 
         request_id = structlog.contextvars.get_contextvars().get('request_id')
 
-        # Run agent in background
-        run_agent_background.send(
-            agent_run_id=agent_run_id, thread_id=thread_id, instance_id=instance_id,
+        # Create session for agent context
+        session_id = await SessionManager.create_session(
+            user_id=user_id,
+            account_id=account_id,
+            jwt_token=jwt_token,
+            thread_id=thread_id,
             project_id=project_id,
-            model_name=model_name,  # Already resolved above
-            enable_thinking=enable_thinking, reasoning_effort=reasoning_effort,
-            stream=stream, enable_context_manager=enable_context_manager,
-            agent_config=agent_config,  # Pass agent configuration
-            is_agent_builder=is_agent_builder,
-            target_agent_id=target_agent_id,
-            request_id=request_id,
+            metadata={
+                "agent_run_id": agent_run_id,
+                "model_name": model_name,
+                "is_agent_builder": is_agent_builder,
+                "target_agent_id": target_agent_id
+            }
         )
+        
+        logger.info(f"Created session {session_id} for agent run {agent_run_id}")
+
+        # Run agent in background with session_id instead of jwt_token
+        try:
+            logger.info(f"Dispatching agent run {agent_run_id} to background worker")
+            message = run_agent_background.send(
+                agent_run_id=agent_run_id, thread_id=thread_id, instance_id=instance_id,
+                project_id=project_id,
+                model_name=model_name,  # Already resolved above
+                enable_thinking=enable_thinking, reasoning_effort=reasoning_effort,
+                stream=stream, enable_context_manager=enable_context_manager,
+                agent_config=agent_config,  # Pass agent configuration
+                is_agent_builder=is_agent_builder,
+                target_agent_id=target_agent_id,
+                request_id=request_id,
+                session_id=session_id,  # Pass session_id instead of jwt_token
+            )
+            logger.info(f"Successfully dispatched agent run {agent_run_id} with message_id: {message.message_id}")
+        except Exception as e:
+            logger.error(f"Failed to dispatch agent run {agent_run_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to dispatch agent to background: {str(e)}")
 
         return {"thread_id": thread_id, "agent_run_id": agent_run_id}
 
@@ -2412,216 +2454,6 @@ async def get_agent_builder_chat_history(
         logger.error(f"Error fetching agent builder chat history for agent {agent_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch chat history: {str(e)}")
 
-@router.get("/agents/{agent_id}/pipedream-tools/{profile_id}")
-async def get_pipedream_tools_for_agent(
-    agent_id: str,
-    profile_id: str,
-    user_id: str = Depends(get_current_user_id_from_jwt),
-    version: Optional[str] = Query(None, description="Version ID to get tools from specific version")
-):
-    logger.info(f"Getting tools for agent {agent_id}, profile {profile_id}, user {user_id}, version {version}")
-
-    try:
-        from pipedream import profile_service, mcp_service
-        from uuid import UUID
-
-        profile = await profile_service.get_profile(UUID(user_id), UUID(profile_id))
-        
-        if not profile:
-            logger.error(f"Profile {profile_id} not found for user {user_id}")
-            try:
-                all_profiles = await profile_service.get_profiles(UUID(user_id))
-                pipedream_profiles = [p for p in all_profiles if 'pipedream' in p.mcp_qualified_name]
-                logger.info(f"User {user_id} has {len(pipedream_profiles)} pipedream profiles: {[p.profile_id for p in pipedream_profiles]}")
-            except Exception as debug_e:
-                logger.warning(f"Could not check user's profiles: {str(debug_e)}")
-            
-            raise HTTPException(status_code=404, detail=f"Profile {profile_id} not found or access denied")
-        
-        if not profile.is_connected:
-            raise HTTPException(status_code=400, detail="Profile is not connected")
-
-        enabled_tools = []
-        try:
-            client = await db.client
-            agent_row = await client.table('agents')\
-                .select('current_version_id')\
-                .eq('agent_id', agent_id)\
-                .eq('account_id', user_id)\
-                .maybe_single()\
-                .execute()
-            
-            if agent_row.data and agent_row.data.get('current_version_id'):
-                if version:
-                    version_result = await client.table('agent_versions')\
-                        .select('config')\
-                        .eq('version_id', version)\
-                        .maybe_single()\
-                        .execute()
-                else:
-                    version_result = await client.table('agent_versions')\
-                        .select('config')\
-                        .eq('version_id', agent_row.data['current_version_id'])\
-                        .maybe_single()\
-                        .execute()
-                
-                if version_result.data and version_result.data.get('config'):
-                    agent_config = version_result.data['config']
-                    tools = agent_config.get('tools', {})
-                    custom_mcps = tools.get('custom_mcp', []) or []
-                    
-                    for mcp in custom_mcps:
-                        mcp_profile_id = mcp.get('config', {}).get('profile_id')
-                        if mcp_profile_id == profile_id:
-                            enabled_tools = mcp.get('enabledTools', mcp.get('enabled_tools', []))
-                            logger.info(f"Found enabled tools for profile {profile_id}: {enabled_tools}")
-                            break
-                    
-                    if not enabled_tools:
-                        logger.info(f"No enabled tools found for profile {profile_id} in agent {agent_id}")
-            
-        except Exception as e:
-            logger.error(f"Error retrieving enabled tools for profile {profile_id}: {str(e)}")
-        
-        logger.info(f"Using {len(enabled_tools)} enabled tools for profile {profile_id}: {enabled_tools}")
-        
-        try:
-            from pipedream.mcp_service import ExternalUserId, AppSlug
-            external_user_id = ExternalUserId(profile.external_user_id)
-            app_slug_obj = AppSlug(profile.app_slug)
-            
-            logger.info(f"Discovering servers for user {external_user_id.value} and app {app_slug_obj.value}")
-            servers = await mcp_service.discover_servers_for_user(external_user_id, app_slug_obj)
-            logger.info(f"Found {len(servers)} servers: {[s.app_slug for s in servers]}")
-            
-            server = servers[0] if servers else None
-            logger.info(f"Selected server: {server.app_slug if server else 'None'} with {len(server.available_tools) if server else 0} tools")
-            
-            if not server:
-                return {
-                    'profile_id': profile_id,
-                    'app_name': profile.app_name,
-                    'profile_name': profile.profile_name,
-                    'tools': [],
-                    'has_mcp_config': len(enabled_tools) > 0
-                }
-            
-            available_tools = server.available_tools
-            
-            formatted_tools = []
-            def tools_match(api_tool_name, stored_tool_name):
-                api_normalized = api_tool_name.lower().replace('-', '_')
-                stored_normalized = stored_tool_name.lower().replace('-', '_')
-                return api_normalized == stored_normalized
-            
-            for tool in available_tools:
-                is_enabled = any(tools_match(tool.name, stored_tool) for stored_tool in enabled_tools)
-                formatted_tools.append({
-                    'name': tool.name,
-                    'description': tool.description or f"Tool from {profile.app_name}",
-                    'enabled': is_enabled
-                })
-            
-            return {
-                'profile_id': profile_id,
-                'app_name': profile.app_name,
-                'profile_name': profile.profile_name,
-                'tools': formatted_tools,
-                'has_mcp_config': len(enabled_tools) > 0
-            }
-            
-        except Exception as e:
-            logger.error(f"Error discovering tools: {e}", exc_info=True)
-            return {
-                'profile_id': profile_id,
-                'app_name': getattr(profile, 'app_name', 'Unknown'),
-                'profile_name': getattr(profile, 'profile_name', 'Unknown'),
-                'tools': [],
-                'has_mcp_config': len(enabled_tools) > 0,
-                'error': str(e)
-            }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting Pipedream tools for agent {agent_id}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@router.put("/agents/{agent_id}/pipedream-tools/{profile_id}")
-async def update_pipedream_tools_for_agent(
-    agent_id: str,
-    profile_id: str,
-    request: dict,
-    user_id: str = Depends(get_current_user_id_from_jwt)
-):
-    try:
-        client = await db.client
-        agent_row = await client.table('agents')\
-            .select('current_version_id')\
-            .eq('agent_id', agent_id)\
-            .eq('account_id', user_id)\
-            .maybe_single()\
-            .execute()
-        if not agent_row.data:
-            raise HTTPException(status_code=404, detail="Agent not found")
-
-        agent_config = {}
-        if agent_row.data.get('current_version_id'):
-            version_result = await client.table('agent_versions')\
-                .select('config')\
-                .eq('version_id', agent_row.data['current_version_id'])\
-                .maybe_single()\
-                .execute()
-            if version_result.data and version_result.data.get('config'):
-                agent_config = version_result.data['config']
-
-        tools = agent_config.get('tools', {})
-        custom_mcps = tools.get('custom_mcp', []) or []
-
-        if any(mcp.get('config', {}).get('profile_id') == profile_id for mcp in custom_mcps):
-            raise HTTPException(status_code=400, detail="This profile is already added to this agent")
-
-        enabled_tools = request.get('enabled_tools', [])
-        
-        updated = False
-        for mcp in custom_mcps:
-            mcp_profile_id = mcp.get('config', {}).get('profile_id')
-            if mcp_profile_id == profile_id:
-                mcp['enabledTools'] = enabled_tools
-                mcp['enabled_tools'] = enabled_tools
-                updated = True
-                logger.info(f"Updated enabled tools for profile {profile_id}: {enabled_tools}")
-                break
-        
-        if not updated:
-            logger.warning(f"Profile {profile_id} not found in agent {agent_id} custom_mcps configuration")
-            
-        if updated:
-            agent_config['tools']['custom_mcp'] = custom_mcps
-            
-            await client.table('agent_versions')\
-                .update({'config': agent_config})\
-                .eq('version_id', agent_row.data['current_version_id'])\
-                .execute()
-            
-            logger.info(f"Successfully updated agent configuration for {agent_id}")
-        
-        result = {
-            'success': updated,
-            'enabled_tools': enabled_tools,
-            'total_tools': len(enabled_tools),
-            'profile_id': profile_id
-        }
-        logger.info(f"Successfully updated Pipedream tools for agent {agent_id}, profile {profile_id}")
-        return result
-        
-    except ValueError as e:
-        logger.error(f"Validation error updating Pipedream tools: {e}")
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error updating Pipedream tools for agent {agent_id}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/agents/{agent_id}/custom-mcp-tools")

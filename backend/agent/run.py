@@ -24,6 +24,7 @@ from agent.custom_prompt import render_prompt_template
 from utils.logger import logger
 from utils.auth_utils import get_account_id_from_thread
 from services.billing import check_billing_status
+from utils.session_manager import SessionManager
 from agent.tools.sb_vision_tool import SandboxVisionTool
 from agent.tools.sb_image_edit_tool import SandboxImageEditTool
 from agent.tools.youtube_tool import YouTubeTool
@@ -52,15 +53,18 @@ class AgentConfig:
     trace: Optional[StatefulTraceClient] = None
     is_agent_builder: Optional[bool] = False
     target_agent_id: Optional[str] = None
+    session_id: Optional[str] = None  # Changed from jwt_token to session_id
 
 
 class ToolManager:
-    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str, user_id: Optional[str] = None, youtube_channels: Optional[List[str]] = None):
+    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str, user_id: Optional[str] = None, youtube_channels: Optional[List[str]] = None, session_id: Optional[str] = None, jwt_token: Optional[str] = None):
         self.thread_manager = thread_manager
         self.project_id = project_id
         self.thread_id = thread_id
         self.user_id = user_id
         self.youtube_channels = youtube_channels or []
+        self.session_id = session_id
+        self.jwt_token = jwt_token  # JWT token passed directly from AgentRunner
         self.web_search_enabled = True  # Default to enabled
     
     def register_all_tools(self):
@@ -80,7 +84,7 @@ class ToolManager:
             self.thread_manager.add_tool(DataProvidersTool)
         # Add YouTube tool if user_id is available
         if self.user_id:
-            self.thread_manager.add_tool(YouTubeTool, user_id=self.user_id, channel_ids=self.youtube_channels, thread_manager=self.thread_manager)
+            self.thread_manager.add_tool(YouTubeTool, user_id=self.user_id, channel_ids=self.youtube_channels, thread_manager=self.thread_manager, jwt_token=self.jwt_token)
     
     def register_agent_builder_tools(self, agent_id: str):
         from agent.tools.agent_builder_tools.agent_config_tool import AgentConfigTool
@@ -131,13 +135,14 @@ class ToolManager:
             self.thread_manager.add_tool(DataProvidersTool)
         # Add YouTube tool if user_id is available
         if self.user_id:
-            self.thread_manager.add_tool(YouTubeTool, user_id=self.user_id, channel_ids=self.youtube_channels, thread_manager=self.thread_manager)
+            self.thread_manager.add_tool(YouTubeTool, user_id=self.user_id, channel_ids=self.youtube_channels, thread_manager=self.thread_manager, jwt_token=self.jwt_token)
 
 
 class MCPManager:
-    def __init__(self, thread_manager: ThreadManager, account_id: str):
+    def __init__(self, thread_manager: ThreadManager, account_id: str, session_id: Optional[str] = None):
         self.thread_manager = thread_manager
         self.account_id = account_id
+        self.session_id = session_id
     
     async def register_mcp_tools(self, agent_config: dict) -> Optional[MCPToolWrapper]:
         all_mcps = []
@@ -149,31 +154,12 @@ class MCPManager:
             for custom_mcp in agent_config['custom_mcps']:
                 custom_type = custom_mcp.get('customType', custom_mcp.get('type', 'sse'))
                 
-                # Add user_id to social-media MCPs
+                # Add user_id to social-media MCPs (JWT will be retrieved from session)
                 if custom_type == 'social-media':
                     if 'config' not in custom_mcp:
                         custom_mcp['config'] = {}
                     custom_mcp['config']['user_id'] = self.account_id
-                
-                if custom_type == 'pipedream':
-                    if 'config' not in custom_mcp:
-                        custom_mcp['config'] = {}
-                    
-                    if not custom_mcp['config'].get('external_user_id'):
-                        profile_id = custom_mcp['config'].get('profile_id')
-                        if profile_id:
-                            try:
-                                from pipedream import profile_service
-                                from uuid import UUID
-                                
-                                profile = await profile_service.get_profile(UUID(self.account_id), UUID(profile_id))
-                                if profile:
-                                    custom_mcp['config']['external_user_id'] = profile.external_user_id
-                            except Exception as e:
-                                logger.error(f"Error retrieving external_user_id from profile {profile_id}: {e}")
-                    
-                    if 'headers' in custom_mcp['config'] and 'x-pd-app-slug' in custom_mcp['config']['headers']:
-                        custom_mcp['config']['app_slug'] = custom_mcp['config']['headers']['x-pd-app-slug']
+                    # JWT token will be retrieved from session in MCPToolExecutor
                 
                 elif custom_type == 'composio':
                     qualified_name = custom_mcp.get('qualifiedName')
@@ -206,7 +192,7 @@ class MCPManager:
         if not all_mcps:
             return None
         
-        mcp_wrapper_instance = MCPToolWrapper(mcp_configs=all_mcps)
+        mcp_wrapper_instance = MCPToolWrapper(mcp_configs=all_mcps, session_id=self.session_id)
         try:
             await mcp_wrapper_instance.initialize_and_register_tools()
             
@@ -300,10 +286,10 @@ class PromptManager:
             youtube_instructions = "\n\n🚨 CRITICAL YOUTUBE INTEGRATION RULES 🚨\n"
             youtube_instructions += "YouTube is a NATIVE integration that MUST be handled specially:\n\n"
             youtube_instructions += "✅ CORRECT approach for YouTube:\n"
-            youtube_instructions += "1. Use youtube_authenticate tool (shows OAuth button for new connections)\n"
-            youtube_instructions += "2. Use youtube_channels tool (lists connected channels)\n"
+            youtube_instructions += "1. Use youtube_channels tool FIRST (lists connected channels)\n"
+            youtube_instructions += "2. Use youtube_channel_stats tool (get detailed channel statistics)\n"
             youtube_instructions += "3. Use youtube_upload_video tool (uploads videos to channels)\n"
-            youtube_instructions += "4. Use youtube_channel_stats tool (get detailed channel statistics)\n\n"
+            youtube_instructions += "4. Use youtube_authenticate tool ONLY if user explicitly asks to connect a new channel\n\n"
             youtube_instructions += "❌ NEVER do these for YouTube:\n"
             youtube_instructions += "• NEVER use create_credential_profile for YouTube\n"
             youtube_instructions += "• NEVER search for YouTube in MCP/Composio toolkits\n"
@@ -312,7 +298,8 @@ class PromptManager:
             youtube_instructions += "⚠️ WHY THIS MATTERS:\n"
             youtube_instructions += "YouTube is a first-class native integration with direct OAuth.\n"
             youtube_instructions += "Using the native tools provides better security and functionality.\n\n"
-            youtube_instructions += "When user mentions YouTube, IMMEDIATELY use youtube_channels or youtube_authenticate!\n"
+            youtube_instructions += "When user mentions YouTube analytics or channels, IMMEDIATELY use youtube_channels!\n"
+            youtube_instructions += "Only use youtube_authenticate if the user explicitly wants to connect a NEW channel.\n"
             system_content += youtube_instructions
         
         return {"role": "system", "content": system_content}
@@ -399,8 +386,18 @@ class MessageManager:
 class AgentRunner:
     def __init__(self, config: AgentConfig):
         self.config = config
+        self.jwt_token = None  # Will be retrieved from session
     
     async def setup(self):
+        # Retrieve session context if session_id is provided
+        if self.config.session_id:
+            session_data = await SessionManager.get_session(self.config.session_id)
+            if session_data:
+                self.jwt_token = session_data.get("jwt_token")
+                logger.info(f"Retrieved JWT token from session {self.config.session_id}")
+            else:
+                logger.warning(f"Session {self.config.session_id} not found in AgentRunner")
+        
         if not self.config.trace:
             self.config.trace = langfuse.trace(name="run_agent", session_id=self.config.thread_id, metadata={"project_id": self.config.project_id})
         
@@ -454,7 +451,9 @@ class AgentRunner:
             self.config.project_id, 
             self.config.thread_id,
             user_id=self.account_id if hasattr(self, 'account_id') else None,
-            youtube_channels=youtube_channels
+            youtube_channels=youtube_channels,
+            session_id=self.config.session_id,
+            jwt_token=self.jwt_token  # Pass both session_id and jwt_token
         )
         tool_manager = self.tool_manager  # Keep local reference for backward compatibility
         
@@ -488,7 +487,7 @@ class AgentRunner:
         if not self.config.agent_config:
             return None
         
-        mcp_manager = MCPManager(self.thread_manager, self.account_id)
+        mcp_manager = MCPManager(self.thread_manager, self.account_id, self.config.session_id)
         return await mcp_manager.register_mcp_tools(self.config.agent_config)
     
     def get_max_tokens(self) -> Optional[int]:
@@ -503,7 +502,12 @@ class AgentRunner:
         return None
     
     async def run(self) -> AsyncGenerator[Dict[str, Any], None]:
-        await self.setup()
+        try:
+            await self.setup()
+        except Exception as e:
+            logger.error(f"Failed to setup agent: {e}", exc_info=True)
+            raise
+        
         # Tool setup will happen after checking web search preference
         mcp_wrapper_instance = None
         system_message = None
@@ -534,9 +538,20 @@ class AgentRunner:
                 self.config.trace.update(input=data['content'])
         
         # Now setup tools with web search preference
-        await self.setup_tools()
-        self.tool_manager.web_search_enabled = web_search_enabled
-        mcp_wrapper_instance = await self.setup_mcp_tools()
+        try:
+            await self.setup_tools()
+            self.tool_manager.web_search_enabled = web_search_enabled
+        except Exception as e:
+            logger.error(f"Failed to setup tools: {e}", exc_info=True)
+            raise
+        
+        try:
+            mcp_wrapper_instance = await self.setup_mcp_tools()
+            if mcp_wrapper_instance:
+                logger.info(f"MCP tools initialized successfully with JWT token present: {bool(self.jwt_token)}")
+        except Exception as e:
+            logger.error(f"Failed to setup MCP tools: {e}", exc_info=True)
+            raise
         
         # Check if YouTube tools are registered through MCP
         has_youtube_tools = False
@@ -727,7 +742,8 @@ async def run_agent(
     agent_config: Optional[dict] = None,    
     trace: Optional[StatefulTraceClient] = None,
     is_agent_builder: Optional[bool] = False,
-    target_agent_id: Optional[str] = None
+    target_agent_id: Optional[str] = None,
+    session_id: Optional[str] = None  # Changed from jwt_token to session_id
 ):
     config = AgentConfig(
         thread_id=thread_id,
@@ -742,7 +758,8 @@ async def run_agent(
         agent_config=agent_config,
         trace=trace,
         is_agent_builder=is_agent_builder,
-        target_agent_id=target_agent_id
+        target_agent_id=target_agent_id,
+        session_id=session_id  # Pass session_id instead of jwt_token
     )
     
     runner = AgentRunner(config)

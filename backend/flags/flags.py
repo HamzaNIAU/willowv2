@@ -168,9 +168,6 @@ workflows_api = True
 # Knowledge base feature flag
 knowledge_base = True
 
-# Pipedream integration feature flag
-pipedream = True
-
 # Credentials API feature flag
 credentials_api = True
 

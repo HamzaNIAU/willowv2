@@ -13,14 +13,14 @@ from services.supabase import DBConnection
 class YouTubeTool(Tool):
     """Native YouTube integration tool for the agent"""
     
-    def __init__(self, user_id: str, channel_ids: Optional[List[str]] = None, thread_manager=None):
+    def __init__(self, user_id: str, channel_ids: Optional[List[str]] = None, thread_manager=None, jwt_token: Optional[str] = None):
         self.user_id = user_id
         self.channel_ids = channel_ids or []
         self.thread_manager = thread_manager
         self.base_url = os.getenv("BACKEND_URL", "http://localhost:8000") + "/api"
         
-        # Create a JWT token for API authentication
-        self.jwt_token = self._create_jwt_token()
+        # Use provided JWT token or create one
+        self.jwt_token = jwt_token or self._create_jwt_token()
         super().__init__()
     
     def _create_jwt_token(self) -> str:
@@ -63,23 +63,20 @@ class YouTubeTool(Tool):
                 async with session.post(f"{self.base_url}/youtube/auth/initiate", headers=headers) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        return ToolResult(error=f"Failed to initiate authentication: {error_text}")
+                        return self.fail_response(f"Failed to initiate authentication: {error_text}")
                     
                     data = await response.json()
                     auth_url = data.get("auth_url")
                     
                     if not auth_url:
-                        return ToolResult(error="No authentication URL received")
+                        return self.fail_response("No authentication URL received")
                     
                     # Return OAuth button for user to click
-                    return ToolResult(
-                        success=True,
-                        data={
-                            "message": "Click the button below to connect your YouTube account",
-                            "auth_url": auth_url,
-                            "type": "oauth_button"
-                        }
-                    )
+                    return self.success_response({
+                        "message": "Click the button below to connect your YouTube account",
+                        "auth_url": auth_url,
+                        "type": "oauth_button"
+                    })
         except Exception as e:
             logger.error(f"YouTube authentication error: {e}")
             return ToolResult(success=False, output=str(e))
@@ -107,19 +104,16 @@ class YouTubeTool(Tool):
                 async with session.get(f"{self.base_url}/youtube/channels", headers=headers) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        return ToolResult(error=f"Failed to get channels: {error_text}")
+                        return self.fail_response(f"Failed to get channels: {error_text}")
                     
                     data = await response.json()
                     channels = data.get("channels", [])
                     
                     if not channels:
-                        return ToolResult(
-                            success=True,
-                            data={
-                                "message": "No YouTube channels connected. Use youtube_authenticate to connect a channel.",
-                                "channels": []
-                            }
-                        )
+                        return self.success_response({
+                            "message": "No YouTube channels connected. Use youtube_authenticate to connect a channel.",
+                            "channels": []
+                        })
                     
                     # Format channel information
                     formatted_channels = []
@@ -134,14 +128,11 @@ class YouTubeTool(Tool):
                             "video_count": channel.get("video_count", 0)
                         })
                     
-                    return ToolResult(
-                        success=True,
-                        data={
-                            "channels": formatted_channels,
-                            "count": len(formatted_channels),
-                            "message": f"Found {len(formatted_channels)} connected YouTube channel(s)"
-                        }
-                    )
+                    return self.success_response({
+                        "channels": formatted_channels,
+                        "count": len(formatted_channels),
+                        "message": f"Found {len(formatted_channels)} connected YouTube channel(s)"
+                    })
         except Exception as e:
             logger.error(f"Error fetching YouTube channels: {e}")
             return ToolResult(success=False, output=str(e))
@@ -198,26 +189,23 @@ class YouTubeTool(Tool):
         try:
             # Check if channel is connected
             if self.channel_ids and channel_id not in self.channel_ids:
-                return ToolResult(
-                    error=f"Channel {channel_id} is not connected or enabled. Use youtube_channels to see available channels."
+                return self.fail_response(
+                    f"Channel {channel_id} is not connected or enabled. Use youtube_channels to see available channels."
                 )
             
             # This would integrate with the YouTube upload API
             # For now, return a placeholder response
-            return ToolResult(
-                success=True,
-                data={
-                    "message": f"Video upload initiated for channel {channel_id}",
-                    "video": {
-                        "title": title,
-                        "description": description,
-                        "tags": tags or [],
-                        "privacy": privacy,
-                        "status": "processing"
-                    },
-                    "note": "Video upload functionality is being implemented"
-                }
-            )
+            return self.success_response({
+                "message": f"Video upload initiated for channel {channel_id}",
+                "video": {
+                    "title": title,
+                    "description": description,
+                    "tags": tags or [],
+                    "privacy": privacy,
+                    "status": "processing"
+                },
+                "note": "Video upload functionality is being implemented"
+            })
         except Exception as e:
             logger.error(f"Error uploading video: {e}")
             return ToolResult(success=False, output=str(e))
@@ -249,21 +237,18 @@ class YouTubeTool(Tool):
                 }
                 async with session.get(f"{self.base_url}/youtube/channels/{channel_id}", headers=headers) as response:
                     if response.status == 404:
-                        return ToolResult(error=f"Channel {channel_id} not found or not connected")
+                        return self.fail_response(f"Channel {channel_id} not found or not connected")
                     elif response.status != 200:
                         error_text = await response.text()
-                        return ToolResult(error=f"Failed to get channel stats: {error_text}")
+                        return self.fail_response(f"Failed to get channel stats: {error_text}")
                     
                     data = await response.json()
                     channel = data.get("channel")
                     
-                    return ToolResult(
-                        success=True,
-                        data={
-                            "channel": channel,
-                            "message": f"Statistics for {channel['name']}"
-                        }
-                    )
+                    return self.success_response({
+                        "channel": channel,
+                        "message": f"Statistics for {channel['name']}"
+                    })
         except Exception as e:
             logger.error(f"Error getting channel stats: {e}")
             return ToolResult(success=False, output=str(e))

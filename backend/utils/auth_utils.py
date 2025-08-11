@@ -57,6 +57,107 @@ async def _get_user_id_from_account_cached(account_id: str) -> Optional[str]:
         structlog.get_logger().error(f"Database lookup failed for account {account_id}: {e}")
         return None
 
+# This function extracts both user ID and JWT token
+async def get_current_user_and_jwt(request: Request) -> tuple[str, str]:
+    """
+    Extract and verify the user ID and JWT token from the Authorization header or API key.
+    
+    Returns:
+        tuple: (user_id, jwt_token)
+    """
+    x_api_key = request.headers.get('x-api-key')
+    
+    # Handle API key authentication
+    if x_api_key:
+        # API key logic remains the same, but we need to return a tuple
+        # For API keys, we'll return the user_id and an empty token
+        try:
+            if ':' not in x_api_key:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid API key format. Expected format: pk_xxx:sk_xxx",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+            
+            public_key, secret_key = x_api_key.split(':', 1)
+            
+            from services.api_keys import APIKeyService
+            db = DBConnection()
+            await db.initialize()
+            api_key_service = APIKeyService(db)
+            
+            validation_result = await api_key_service.validate_api_key(public_key, secret_key)
+            
+            if validation_result.is_valid:
+                user_id = await _get_user_id_from_account_cached(validation_result.account_id)
+                if user_id:
+                    sentry.sentry.set_user({"id": user_id})
+                    structlog.contextvars.bind_contextvars(
+                        user_id=user_id,
+                        account_id=validation_result.account_id,
+                        auth_method="api_key"
+                    )
+                    # For API keys, return empty token since we don't have a JWT
+                    return user_id, ""
+                else:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="API key account not found",
+                        headers={"WWW-Authenticate": "Bearer"}
+                    )
+            else:
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Invalid API key: {validation_result.error_message}",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            structlog.get_logger().error(f"Error validating API key: {e}")
+            raise HTTPException(
+                status_code=401,
+                detail="API key validation failed",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+    
+    # JWT authentication
+    auth_header = request.headers.get('Authorization')
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
+        raise HTTPException(
+            status_code=401,
+            detail="No valid authentication credentials found",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    token = auth_header.split(' ')[1]
+    
+    try:
+        payload = jwt.decode(token, options={"verify_signature": False})
+        user_id = payload.get('sub')
+        
+        if not user_id:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token payload",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+
+        sentry.sentry.set_user({"id": user_id})
+        structlog.contextvars.bind_contextvars(
+            user_id=user_id,
+            auth_method="jwt"
+        )
+        return user_id, token
+        
+    except PyJWTError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
 # This function extracts the user ID from Supabase JWT
 async def get_current_user_id_from_jwt(request: Request) -> str:
     """
