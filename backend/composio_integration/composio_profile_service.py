@@ -36,9 +36,9 @@ class ComposioProfileService:
         self.db = db_connection or DBConnection()
         
     def _get_encryption_key(self) -> bytes:
-        key = os.getenv("ENCRYPTION_KEY")
+        key = os.getenv("MCP_CREDENTIAL_ENCRYPTION_KEY")
         if not key:
-            raise ValueError("ENCRYPTION_KEY environment variable is required")
+            raise ValueError("MCP_CREDENTIAL_ENCRYPTION_KEY environment variable is required")
         return key.encode()
 
     def _encrypt_config(self, config_json: str) -> str:
@@ -255,6 +255,25 @@ class ComposioProfileService:
             logger.error(f"Failed to get config for profile {profile_id}: {e}", exc_info=True)
             raise
 
+    async def update_profile_metadata(self, profile_id: str, metadata: Dict[str, Any]) -> bool:
+        """Update the metadata field for a profile"""
+        try:
+            client = await self.db.client
+            
+            result = await client.table('user_mcp_credential_profiles').update({
+                'metadata': metadata,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }).eq('profile_id', profile_id).execute()
+            
+            if result.data:
+                logger.info(f"Updated metadata for profile {profile_id}")
+                return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to update metadata for profile {profile_id}: {e}", exc_info=True)
+            return False
+    
     async def get_profiles(self, account_id: str, toolkit_slug: Optional[str] = None) -> List[ComposioProfile]:
         try:
             client = await self.db.client

@@ -58,7 +58,7 @@ export const useCreateComposioProfile = () => {
     mutationFn: async (request: CreateComposioProfileRequest): Promise<CreateComposioProfileResponse> => {
       return await composioApi.createProfile(request);
     },
-    onSuccess: (data, variables) => {
+    onSuccess: async (data, variables) => {
       queryClient.invalidateQueries({ queryKey: composioKeys.profiles.all() });
       toast.success(`Connected to ${variables.profile_name}!`);
       
@@ -67,6 +67,8 @@ export const useCreateComposioProfile = () => {
         console.log('🔗 Opening OAuth URL:', data.redirect_url);
         window.open(data.redirect_url, '_blank', 'width=600,height=700,resizable=yes,scrollbars=yes');
       }
+      
+      // Social media platforms now use native integrations
     },
     onError: (error) => {
       console.error('Failed to create Composio profile:', error);

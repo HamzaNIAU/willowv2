@@ -36,7 +36,24 @@ async def get_or_start_sandbox(sandbox_id: str) -> AsyncSandbox:
     logger.info(f"Getting or starting sandbox with ID: {sandbox_id}")
 
     try:
-        sandbox = await daytona.get(sandbox_id)
+        # First try to get sandbox directly by ID (for backwards compatibility)
+        try:
+            sandbox = await daytona.get(sandbox_id)
+            logger.debug(f"Found sandbox by direct ID: {sandbox_id}")
+        except Exception as direct_error:
+            # If direct ID fails, try to find sandbox by label ID
+            logger.debug(f"Direct ID lookup failed, trying to find by label: {sandbox_id}")
+            all_sandboxes = await daytona.list()
+            sandbox = None
+            for s in all_sandboxes:
+                if s.labels and s.labels.get('id') == sandbox_id:
+                    sandbox = s
+                    logger.info(f"Found sandbox with label ID {sandbox_id}: actual sandbox ID is {s.id}")
+                    break
+            
+            if not sandbox:
+                raise Exception(f"No sandbox found with ID or label: {sandbox_id}")
+        
         
         # Check if sandbox needs to be started
         if sandbox.state == SandboxState.ARCHIVED or sandbox.state == SandboxState.STOPPED:

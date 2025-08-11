@@ -14,6 +14,7 @@ from .composio_service import (
 )
 from .toolkit_service import ToolkitInfo, ToolkitService, CategoryInfo
 from .composio_profile_service import ComposioProfileService, ComposioProfile
+import os
 
 router = APIRouter(prefix="/composio", tags=["composio"])
 
@@ -134,6 +135,13 @@ async def integrate_toolkit(
     current_user_id: str = Depends(get_current_user_id_from_jwt)
 ) -> IntegrationStatusResponse:
     try:
+        # Check if this is a social media toolkit
+        if request.toolkit_slug.lower() in ToolkitService.BLOCKED_SOCIAL_MEDIA_TOOLKITS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Social media platform '{request.toolkit_slug}' should use native Social Media integrations. Please go to the Social Media page to connect your {request.toolkit_slug} account."
+            )
+        
         integration_user_id = str(uuid4())
         logger.info(f"Generated integration user_id: {integration_user_id} for account: {current_user_id}")
         
@@ -294,6 +302,59 @@ async def get_integration_status(
         return {"connected_account_id": connected_account_id, **status}
     except Exception as e:
         logger.error(f"Failed to get status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/profiles/{profile_id}/fetch-youtube-info")
+async def fetch_youtube_channel_info(
+    profile_id: str,
+    user_id: str = Depends(get_current_user_id_from_jwt)
+) -> Dict[str, Any]:
+    """
+    Fetch and update YouTube channel information for a profile
+    """
+    try:
+        # Get the profile
+        profile_service = ComposioProfileService(db)
+        profiles = await profile_service.get_all_user_profiles(user_id)
+        profile = next((p for p in profiles if p.profile_id == profile_id), None)
+        
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        
+        # Check if it's a YouTube profile
+        if profile.toolkit_slug != "youtube":
+            return {"success": False, "message": "Not a YouTube profile"}
+        
+        # Fetch YouTube channel info
+        api_key = os.getenv("COMPOSIO_API_KEY")
+        if not api_key:
+            logger.error("COMPOSIO_API_KEY not configured")
+            return {"success": False, "message": "Service not configured"}
+        
+        youtube_service = YouTubeChannelService(api_key)
+        
+        # Try to get connected account ID from profile
+        # Note: We may need to store this when creating the profile
+        channel_info = await youtube_service.get_channel_info_fallback(profile.profile_name)
+        
+        if channel_info:
+            # Update profile metadata in database
+            client = await db.client
+            await client.table('user_mcp_credential_profiles').update({
+                'metadata': channel_info,
+                'updated_at': datetime.now().isoformat()
+            }).eq('profile_id', profile_id).execute()
+            
+            return {
+                "success": True,
+                "channel_info": channel_info
+            }
+        
+        return {"success": False, "message": "Could not fetch channel information"}
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch YouTube channel info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

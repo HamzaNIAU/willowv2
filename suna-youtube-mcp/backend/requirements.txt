@@ -1,0 +1,47 @@
+# YouTube MCP Backend Requirements for Suna
+# Following Suna's tech stack
+
+# Core Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.9
+
+# Database & Auth
+supabase==2.10.0
+PyJWT==2.9.0
+
+# YouTube API
+google-api-python-client==2.149.0
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+
+# Background Jobs
+dramatiq[redis]==1.18.0
+redis==5.2.0
+
+# Type Validation
+pydantic==2.9.2
+pydantic-settings==2.6.0
+
+# File Processing
+aiofiles==24.1.0
+python-magic==0.4.27
+Pillow==11.0.0
+
+# Monitoring
+sentry-sdk[fastapi]==2.18.0
+langfuse==2.60.0
+prometheus-client==0.21.0
+structlog==25.4.0
+
+# Utils
+python-dotenv==1.0.1
+httpx==0.27.2
+tenacity==9.0.0
+
+# Development
+pytest==8.3.3
+pytest-asyncio==0.24.0
+black==24.10.0
+ruff==0.7.0

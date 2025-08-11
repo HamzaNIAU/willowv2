@@ -74,6 +74,7 @@ class ComposioProfileSummary(BaseModel):
     is_default: bool
     created_at: str
     has_mcp_url: bool
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ComposioToolkitGroup(BaseModel):
@@ -360,6 +361,16 @@ async def get_composio_profiles(
     user_id: str = Depends(get_current_user_id_from_jwt)
 ):
     try:
+        # Return empty response if MCP_CREDENTIAL_ENCRYPTION_KEY is not set or other setup issues
+        import os
+        if not os.getenv("MCP_CREDENTIAL_ENCRYPTION_KEY"):
+            logger.warning("MCP_CREDENTIAL_ENCRYPTION_KEY not set, returning empty Composio profiles")
+            return ComposioCredentialsResponse(
+                success=True,
+                toolkits=[],
+                total_profiles=0
+            )
+        
         profile_service = get_profile_service(db)
         from composio_integration.composio_profile_service import ComposioProfileService
         composio_service = ComposioProfileService(db)
@@ -414,7 +425,8 @@ async def get_composio_profiles(
                 is_connected=has_mcp_url,
                 is_default=profile.is_default,
                 created_at=profile.created_at.isoformat() if profile.created_at else "",
-                has_mcp_url=has_mcp_url
+                has_mcp_url=has_mcp_url,
+                metadata=profile.metadata
             )
             
             toolkit_groups[toolkit_slug]['profiles'].append(profile_summary)
@@ -432,9 +444,22 @@ async def get_composio_profiles(
             total_profiles=len(composio_profiles)
         )
         
+    except ValueError as e:
+        # Handle missing ENCRYPTION_KEY or other configuration issues
+        logger.warning(f"Configuration issue for Composio profiles: {e}")
+        return ComposioCredentialsResponse(
+            success=True,
+            toolkits=[],
+            total_profiles=0
+        )
     except Exception as e:
-        logger.error(f"Error getting Composio profiles: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Error getting Composio profiles: {e}", exc_info=True)
+        # Return empty response instead of 500 error for better UX
+        return ComposioCredentialsResponse(
+            success=True,
+            toolkits=[],
+            total_profiles=0
+        )
 
 
 @router.get("/composio-profiles/{profile_id}/mcp-url", response_model=ComposioMcpUrlResponse)

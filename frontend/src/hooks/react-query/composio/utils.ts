@@ -89,6 +89,20 @@ export interface ComposioProfileSummary {
   is_default: boolean;
   created_at: string;
   has_mcp_url: boolean;
+  metadata?: {
+    channel_id?: string;
+    username?: string;
+    title?: string;
+    description?: string;
+    profile_picture?: string;
+    profile_picture_medium?: string;
+    profile_picture_small?: string;
+    subscriber_count?: string;
+    view_count?: string;
+    video_count?: string;
+    country?: string;
+    published_at?: string;
+  };
 }
 
 export interface ComposioToolkitGroup {
@@ -241,5 +255,40 @@ export const composioApi = {
       success: response.data.success,
       icon_url: response.data.icon_url
     };
+  },
+
+  async deleteProfile(profileId: string): Promise<{ message: string }> {
+    const response = await backendApi.delete<{ message: string }>(
+      `/secure-mcp/credential-profiles/${profileId}`,
+      {
+        errorContext: { operation: 'delete profile', resource: 'Composio profile' },
+      }
+    );
+    
+    if (!response.success) {
+      throw new Error(response.error?.message || 'Failed to delete profile');
+    }
+    
+    return response.data;
+  },
+
+  async fetchYouTubeChannelInfo(profileId: string): Promise<{
+    success: boolean;
+    channel_info?: any;
+    message?: string;
+  }> {
+    const result = await backendApi.post<{
+      success: boolean;
+      channel_info?: any;
+      message?: string;
+    }>(
+      `/composio/profiles/${profileId}/fetch-youtube-info`,
+      {},
+      {
+        errorContext: { operation: 'fetch YouTube info', resource: 'YouTube channel' },
+      }
+    );
+
+    return result.data;
   },
 }; 

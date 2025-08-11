@@ -657,6 +657,7 @@ export const startAgent = async (
     reasoning_effort?: string;
     stream?: boolean;
     agent_id?: string; // Optional again
+    selected_mcps?: any[]; // MCPs selected at runtime (e.g., YouTube channels)
   },
 ): Promise<{ agent_run_id: string }> => {
   try {
@@ -699,6 +700,11 @@ export const startAgent = async (
     // Only include agent_id if it's provided
     if (finalOptions.agent_id) {
       body.agent_id = finalOptions.agent_id;
+    }
+    
+    // Include selected MCPs if provided (e.g., YouTube channels)
+    if (finalOptions.selected_mcps && finalOptions.selected_mcps.length > 0) {
+      body.selected_mcps = finalOptions.selected_mcps;
     }
 
     const response = await fetch(`${API_URL}/thread/${threadId}/agent/start`, {

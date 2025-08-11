@@ -191,7 +191,7 @@ class TemplateService:
             return None
         
         creator_id = result.data['creator_id']
-        creator_result = await client.schema('basejump').from_('accounts').select('id, name, slug').eq('id', creator_id).execute()
+        creator_result = await client.table('accounts').select('id, name, slug').eq('id', creator_id).execute()
         
         creator_name = None
         if creator_result.data:
@@ -211,7 +211,7 @@ class TemplateService:
         if not result.data:
             return []
         
-        creator_result = await client.schema('basejump').from_('accounts').select('id, name, slug').eq('id', creator_id).execute()
+        creator_result = await client.table('accounts').select('id, name, slug').eq('id', creator_id).execute()
         
         creator_name = None
         if creator_result.data:
@@ -237,7 +237,7 @@ class TemplateService:
             return []
         
         creator_ids = list(set(template['creator_id'] for template in result.data))
-        accounts_result = await client.schema('basejump').from_('accounts').select('id, name, slug').in_('id', creator_ids).execute()
+        accounts_result = await client.table('accounts').select('id, name, slug').in_('id', creator_ids).execute()
         
         creator_names = {}
         if accounts_result.data:

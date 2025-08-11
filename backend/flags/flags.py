@@ -150,8 +150,8 @@ async def get_flag_details(key: str) -> Optional[Dict[str, str]]:
 
 # Feature Flags
 
-# Custom agents feature flag
-custom_agents = True
+# Custom agents feature flag - DISABLED to use only default Suna agent
+custom_agents = False
 
 # MCP module feature flag  
 mcp_module = True

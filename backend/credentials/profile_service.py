@@ -23,6 +23,7 @@ class MCPCredentialProfile:
     config: Dict[str, Any]
     is_active: bool
     is_default: bool
+    metadata: Optional[Dict[str, Any]] = None
     last_used_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -245,12 +246,16 @@ class ProfileService:
             logger.error(f"Failed to decrypt profile {data['profile_id']}: {e}")
             config = {}
         
+        # Include metadata if available
+        metadata = data.get('metadata', {})
+        
         return MCPCredentialProfile(
             profile_id=data['profile_id'],
             account_id=data['account_id'],
             mcp_qualified_name=data['mcp_qualified_name'],
             profile_name=data['profile_name'],
             display_name=data['display_name'],
+            metadata=metadata,
             config=config,
             is_active=data['is_active'],
             is_default=data.get('is_default', False),

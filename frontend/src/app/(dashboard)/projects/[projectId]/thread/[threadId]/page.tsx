@@ -28,6 +28,7 @@ import { useThreadData, useToolCalls, useBilling, useKeyboardShortcuts } from '.
 import { ThreadError, UpgradeDialog, ThreadLayout } from '../_components';
 import { useVncPreloader } from '@/hooks/useVncPreloader';
 import { useThreadAgent } from '@/hooks/react-query/agents/use-agents';
+import { useAgentMcpConfigurations } from '@/hooks/react-query/agents/use-agent-mcp-toggle';
 import { AgentRunLimitDialog } from '@/components/thread/agent-run-limit-dialog';
 
 export default function ThreadPage({
@@ -133,6 +134,7 @@ export default function ThreadPage({
   const { data: threadAgentData } = useThreadAgent(threadId);
   const agent = threadAgentData?.agent;
   const workflowId = threadQuery.data?.metadata?.workflow_id;
+  const { data: mcpConfigurations = [] } = useAgentMcpConfigurations(selectedAgentId);
 
   // Set initial selected agent from thread data
   useEffect(() => {
@@ -292,11 +294,19 @@ export default function ThreadPage({
           message
         });
 
+        // Filter for enabled YouTube channels (social-media MCPs)
+        const enabledYouTubeMcps = mcpConfigurations.filter((mcp: any) => 
+          mcp.enabled && 
+          mcp.customType === 'social-media' && 
+          mcp.platform === 'youtube'
+        );
+
         const agentPromise = startAgentMutation.mutateAsync({
           threadId,
           options: {
             ...options,
-            agent_id: selectedAgentId
+            agent_id: selectedAgentId,
+            selected_mcps: enabledYouTubeMcps.length > 0 ? enabledYouTubeMcps : undefined
           }
         });
 
@@ -736,6 +746,8 @@ export default function ThreadPage({
               agentName={agent && agent.name}
               selectedAgentId={selectedAgentId}
               onAgentSelect={setSelectedAgentId}
+              enableAdvancedConfig={false}
+              hideAgentSelection={true}
               toolCalls={toolCalls}
               toolCallIndex={currentToolIndex}
               showToolPreview={!isSidePanelOpen && toolCalls.length > 0}

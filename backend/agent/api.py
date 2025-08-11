@@ -24,6 +24,15 @@ from run_agent_background import run_agent_background, _cleanup_redis_response_l
 from utils.constants import MODEL_NAME_ALIASES
 from flags.flags import is_enabled
 
+# Initialize Dramatiq broker for task queuing
+import dramatiq
+from dramatiq.brokers.redis import RedisBroker
+
+redis_host = os.getenv('REDIS_HOST', 'localhost')
+redis_port = int(os.getenv('REDIS_PORT', 6379))
+redis_broker = RedisBroker(host=redis_host, port=redis_port, middleware=[dramatiq.middleware.AsyncIO()])
+dramatiq.set_broker(redis_broker)
+
 from .config_helper import extract_agent_config, build_unified_config, extract_tools_for_agent_run, get_mcp_configs
 from .utils import check_agent_run_limit
 from .versioning.version_service import get_version_service
@@ -52,6 +61,7 @@ class AgentStartRequest(BaseModel):
     stream: Optional[bool] = True
     enable_context_manager: Optional[bool] = False
     agent_id: Optional[str] = None  # Custom agent to use
+    selected_mcps: Optional[List[Dict[str, Any]]] = None  # Runtime MCPs to include (e.g., YouTube channels)
 
 class InitiateAgentResponse(BaseModel):
     thread_id: str
@@ -450,22 +460,30 @@ async def start_agent(
         logger.warning(f"Agent run limit exceeded for account {account_id}: {limit_check['running_count']} running agents")
         raise HTTPException(status_code=429, detail=error_detail)
 
-    try:
-        project_result = await client.table('projects').select('*').eq('project_id', project_id).execute()
-        if not project_result.data:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        project_data = project_result.data[0]
-        sandbox_info = project_data.get('sandbox', {})
-        if not sandbox_info.get('id'):
-            raise HTTPException(status_code=404, detail="No sandbox found for this project")
+    # Check if sandbox is enabled
+    sandbox_enabled = os.getenv('SANDBOX_ENABLED', 'true').lower() == 'true'
+    sandbox_id = None
+    
+    if sandbox_enabled:
+        try:
+            project_result = await client.table('projects').select('*').eq('project_id', project_id).execute()
+            if not project_result.data:
+                raise HTTPException(status_code=404, detail="Project not found")
             
-        sandbox_id = sandbox_info['id']
-        sandbox = await get_or_start_sandbox(sandbox_id)
-        logger.info(f"Successfully started sandbox {sandbox_id} for project {project_id}")
-    except Exception as e:
-        logger.error(f"Failed to start sandbox for project {project_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to initialize sandbox: {str(e)}")
+            project_data = project_result.data[0]
+            sandbox_info = project_data.get('sandbox', {})
+            if not sandbox_info.get('id'):
+                logger.warning(f"No sandbox found for project {project_id}, continuing without sandbox")
+            else:
+                sandbox_id = sandbox_info['id']
+                sandbox = await get_or_start_sandbox(sandbox_id)
+                logger.info(f"Successfully started sandbox {sandbox_id} for project {project_id}")
+        except Exception as e:
+            logger.error(f"Failed to start sandbox for project {project_id}: {str(e)}")
+            # Don't fail the entire request if sandbox fails, just log the error
+            logger.warning(f"Continuing without sandbox due to error: {str(e)}")
+    else:
+        logger.info(f"Sandbox disabled, skipping sandbox initialization for project {project_id}")
 
     agent_run = await client.table('agent_runs').insert({
         "thread_id": thread_id, "status": "running",
@@ -493,6 +511,29 @@ async def start_agent(
         logger.warning(f"Failed to register agent run in Redis ({instance_key}): {str(e)}")
 
     request_id = structlog.contextvars.get_contextvars().get('request_id')
+
+    # Merge selected MCPs from the request into the agent configuration
+    if body.selected_mcps and agent_config:
+        logger.info(f"Merging {len(body.selected_mcps)} selected MCPs into agent configuration")
+        
+        # Ensure custom_mcps exists in agent_config
+        if 'custom_mcps' not in agent_config:
+            agent_config['custom_mcps'] = []
+        
+        # Create a set of existing MCP qualifiedNames for deduplication
+        existing_mcp_names = {
+            mcp.get('qualifiedName', '') 
+            for mcp in agent_config.get('custom_mcps', [])
+        }
+        
+        # Add selected MCPs that aren't already in the configuration
+        for mcp in body.selected_mcps:
+            qualified_name = mcp.get('qualifiedName', '')
+            if qualified_name and qualified_name not in existing_mcp_names:
+                agent_config['custom_mcps'].append(mcp)
+                logger.info(f"Added MCP to agent config: {qualified_name}")
+        
+        logger.info(f"Agent config now has {len(agent_config['custom_mcps'])} custom MCPs")
 
     # Run the agent in the background
     run_agent_background.send(
@@ -529,7 +570,14 @@ async def get_agent_runs(thread_id: str, user_id: str = Depends(get_current_user
     )
     logger.info(f"Fetching agent runs for thread: {thread_id}")
     client = await db.client
-    await verify_thread_access(client, thread_id, user_id)
+    
+    try:
+        await verify_thread_access(client, thread_id, user_id)
+    except HTTPException as e:
+        # If thread doesn't exist or user doesn't have access, return empty list instead of error
+        logger.warning(f"Thread access verification failed for thread {thread_id}: {e.detail}")
+        return {"agent_runs": []}
+    
     agent_runs = await client.table('agent_runs').select('id, thread_id, status, started_at, completed_at, error, created_at, updated_at').eq("thread_id", thread_id).order('created_at', desc=True).execute()
     logger.debug(f"Found {len(agent_runs.data)} agent runs for thread: {thread_id}")
     return {"agent_runs": agent_runs.data}
@@ -565,11 +613,25 @@ async def get_thread_agent(thread_id: str, user_id: str = Depends(get_current_us
     
     try:
         # Verify thread access and get thread data
-        await verify_thread_access(client, thread_id, user_id)
+        try:
+            await verify_thread_access(client, thread_id, user_id)
+        except HTTPException as e:
+            # If thread doesn't exist or user doesn't have access, return no agent
+            logger.warning(f"Thread access verification failed for thread {thread_id}: {e.detail}")
+            return {
+                "agent": None,
+                "source": "none",
+                "message": "Thread not found or access denied"
+            }
+        
         thread_result = await client.table('threads').select('account_id').eq('thread_id', thread_id).execute()
         
         if not thread_result.data:
-            raise HTTPException(status_code=404, detail="Thread not found")
+            return {
+                "agent": None,
+                "source": "none",
+                "message": "Thread not found"
+            }
         
         thread_data = thread_result.data[0]
         account_id = thread_data.get('account_id')
@@ -1084,47 +1146,58 @@ async def initiate_agent_with_files(
         project_id = project.data[0]['project_id']
         logger.info(f"Created new project: {project_id}")
 
-        # 2. Create Sandbox
+        # 2. Create Sandbox (if enabled)
         sandbox_id = None
-        try:
-          sandbox_pass = str(uuid.uuid4())
-          sandbox = await create_sandbox(sandbox_pass, project_id)
-          sandbox_id = sandbox.id
-          logger.info(f"Created new sandbox {sandbox_id} for project {project_id}")
-          
-          # Get preview links
-          vnc_link = await sandbox.get_preview_link(6080)
-          website_link = await sandbox.get_preview_link(8080)
-          vnc_url = vnc_link.url if hasattr(vnc_link, 'url') else str(vnc_link).split("url='")[1].split("'")[0]
-          website_url = website_link.url if hasattr(website_link, 'url') else str(website_link).split("url='")[1].split("'")[0]
-          token = None
-          if hasattr(vnc_link, 'token'):
-              token = vnc_link.token
-          elif "token='" in str(vnc_link):
-              token = str(vnc_link).split("token='")[1].split("'")[0]
-        except Exception as e:
-            logger.error(f"Error creating sandbox: {str(e)}")
-            await client.table('projects').delete().eq('project_id', project_id).execute()
-            if sandbox_id:
-              try: await delete_sandbox(sandbox_id)
-              except Exception as e: pass
-            raise Exception("Failed to create sandbox")
+        sandbox = None
+        sandbox_pass = None
+        vnc_url = None
+        website_url = None
+        token = None
+        
+        if config.SANDBOX_ENABLED:
+            try:
+                sandbox_pass = str(uuid.uuid4())
+                sandbox = await create_sandbox(sandbox_pass, project_id)
+                sandbox_id = sandbox.id
+                logger.info(f"Created new sandbox {sandbox_id} for project {project_id}")
+                
+                # Get preview links
+                vnc_link = await sandbox.get_preview_link(6080)
+                website_link = await sandbox.get_preview_link(8080)
+                vnc_url = vnc_link.url if hasattr(vnc_link, 'url') else str(vnc_link).split("url='")[1].split("'")[0]
+                website_url = website_link.url if hasattr(website_link, 'url') else str(website_link).split("url='")[1].split("'")[0]
+                token = None
+                if hasattr(vnc_link, 'token'):
+                    token = vnc_link.token
+                elif "token='" in str(vnc_link):
+                    token = str(vnc_link).split("token='")[1].split("'")[0]
+            except Exception as e:
+                logger.error(f"Error creating sandbox: {str(e)}")
+                # Don't delete the project if sandbox creation fails - continue without sandbox
+                logger.warning(f"Continuing without sandbox for project {project_id} due to: {str(e)}")
+                # Set sandbox fields to None so agent can still run
+                sandbox_id = None
+                sandbox_pass = None
+                vnc_url = None
+                website_url = None
+                token = None
 
+            # Update project with sandbox info
+            update_result = await client.table('projects').update({
+                'sandbox': {
+                    'id': sandbox_id, 'pass': sandbox_pass, 'vnc_preview': vnc_url,
+                    'sandbox_url': website_url, 'token': token
+                }
+            }).eq('project_id', project_id).execute()
 
-        # Update project with sandbox info
-        update_result = await client.table('projects').update({
-            'sandbox': {
-                'id': sandbox_id, 'pass': sandbox_pass, 'vnc_preview': vnc_url,
-                'sandbox_url': website_url, 'token': token
-            }
-        }).eq('project_id', project_id).execute()
-
-        if not update_result.data:
-            logger.error(f"Failed to update project {project_id} with new sandbox {sandbox_id}")
-            if sandbox_id:
-              try: await delete_sandbox(sandbox_id)
-              except Exception as e: logger.error(f"Error deleting sandbox: {str(e)}")
-            raise Exception("Database update failed")
+            if not update_result.data:
+                logger.error(f"Failed to update project {project_id} with new sandbox {sandbox_id}")
+                if sandbox_id:
+                    try: await delete_sandbox(sandbox_id)
+                    except Exception as e: logger.error(f"Error deleting sandbox: {str(e)}")
+                raise Exception("Database update failed")
+        else:
+            logger.info(f"Sandbox creation disabled. Skipping sandbox initialization for project {project_id}")
 
         # 3. Create Thread
         thread_data = {
@@ -1166,9 +1239,9 @@ async def initiate_agent_with_files(
         # Trigger Background Naming Task
         asyncio.create_task(generate_and_update_project_name(project_id=project_id, prompt=prompt))
 
-        # 4. Upload Files to Sandbox (if any)
+        # 4. Upload Files to Sandbox (if any and if sandbox is available)
         message_content = prompt
-        if files:
+        if files and sandbox:
             successful_uploads = []
             failed_uploads = []
             for file in files:
@@ -1232,8 +1305,8 @@ async def initiate_agent_with_files(
         agent_run = await client.table('agent_runs').insert({
             "thread_id": thread_id, "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "agent_id": agent_config.get('agent_id') if agent_config else None,
-            "agent_version_id": agent_config.get('current_version_id') if agent_config else None,
+            "agent_id": agent_config.get('agent_id') if agent_config and isinstance(agent_config, dict) else None,
+            "agent_version_id": agent_config.get('current_version_id') if agent_config and isinstance(agent_config, dict) else None,
             "metadata": {
                 "model_name": model_name,
                 "enable_thinking": enable_thinking,

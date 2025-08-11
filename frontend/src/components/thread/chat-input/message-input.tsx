@@ -17,6 +17,7 @@ import { TooltipProvider, TooltipTrigger } from '@radix-ui/react-tooltip';
 import { BillingModal } from '@/components/billing/billing-modal';
 import ChatDropdown from './chat-dropdown';
 import { handleFiles } from './file-upload-handler';
+import { MCPConnectionsDropdown } from './mcp-connections-dropdown';
 
 interface MessageInputProps {
   value: string;
@@ -220,6 +221,14 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
                 setIsUploading={setIsUploading}
                 messages={messages}
                 isLoggedIn={isLoggedIn}
+              />
+            )}
+            
+            {/* MCP Connections Dropdown */}
+            {isLoggedIn && (
+              <MCPConnectionsDropdown
+                agentId={selectedAgentId}
+                disabled={loading || (disabled && !isAgentRunning)}
               />
             )}
 

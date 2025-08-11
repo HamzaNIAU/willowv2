@@ -26,6 +26,7 @@ from utils.auth_utils import get_account_id_from_thread
 from services.billing import check_billing_status
 from agent.tools.sb_vision_tool import SandboxVisionTool
 from agent.tools.sb_image_edit_tool import SandboxImageEditTool
+from agent.tools.youtube_tool import YouTubeTool
 from services.langfuse import langfuse
 from langfuse.client import StatefulTraceClient
 from agent.gemini_prompt import get_gemini_system_prompt
@@ -54,26 +55,32 @@ class AgentConfig:
 
 
 class ToolManager:
-    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str):
+    def __init__(self, thread_manager: ThreadManager, project_id: str, thread_id: str, user_id: Optional[str] = None, youtube_channels: Optional[List[str]] = None):
         self.thread_manager = thread_manager
         self.project_id = project_id
         self.thread_id = thread_id
+        self.user_id = user_id
+        self.youtube_channels = youtube_channels or []
+        self.web_search_enabled = True  # Default to enabled
     
     def register_all_tools(self):
         self.thread_manager.add_tool(ExpandMessageTool, thread_id=self.thread_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(MessageTool)
-        
         self.thread_manager.add_tool(SandboxShellTool, project_id=self.project_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(SandboxFilesTool, project_id=self.project_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(SandboxBrowserTool, project_id=self.project_id, thread_id=self.thread_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(SandboxDeployTool, project_id=self.project_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(SandboxExposeTool, project_id=self.project_id, thread_manager=self.thread_manager)
-        self.thread_manager.add_tool(SandboxWebSearchTool, project_id=self.project_id, thread_manager=self.thread_manager)
+        if self.web_search_enabled:
+            self.thread_manager.add_tool(SandboxWebSearchTool, project_id=self.project_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(SandboxVisionTool, project_id=self.project_id, thread_id=self.thread_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(SandboxImageEditTool, project_id=self.project_id, thread_id=self.thread_id, thread_manager=self.thread_manager)
         self.thread_manager.add_tool(TaskListTool, project_id=self.project_id, thread_manager=self.thread_manager, thread_id=self.thread_id)
         if config.RAPID_API_KEY:
             self.thread_manager.add_tool(DataProvidersTool)
+        # Add YouTube tool if user_id is available
+        if self.user_id:
+            self.thread_manager.add_tool(YouTubeTool, user_id=self.user_id, channel_ids=self.youtube_channels, thread_manager=self.thread_manager)
     
     def register_agent_builder_tools(self, agent_id: str):
         from agent.tools.agent_builder_tools.agent_config_tool import AgentConfigTool
@@ -116,12 +123,15 @@ class ToolManager:
             self.thread_manager.add_tool(SandboxDeployTool, project_id=self.project_id, thread_manager=self.thread_manager)
         if safe_tool_check('sb_expose_tool'):
             self.thread_manager.add_tool(SandboxExposeTool, project_id=self.project_id, thread_manager=self.thread_manager)
-        if safe_tool_check('web_search_tool'):
+        if safe_tool_check('web_search_tool') and self.web_search_enabled:
             self.thread_manager.add_tool(SandboxWebSearchTool, project_id=self.project_id, thread_manager=self.thread_manager)
         if safe_tool_check('sb_vision_tool'):
             self.thread_manager.add_tool(SandboxVisionTool, project_id=self.project_id, thread_id=self.thread_id, thread_manager=self.thread_manager)
         if config.RAPID_API_KEY and safe_tool_check('data_providers_tool'):
             self.thread_manager.add_tool(DataProvidersTool)
+        # Add YouTube tool if user_id is available
+        if self.user_id:
+            self.thread_manager.add_tool(YouTubeTool, user_id=self.user_id, channel_ids=self.youtube_channels, thread_manager=self.thread_manager)
 
 
 class MCPManager:
@@ -138,6 +148,12 @@ class MCPManager:
         if agent_config.get('custom_mcps'):
             for custom_mcp in agent_config['custom_mcps']:
                 custom_type = custom_mcp.get('customType', custom_mcp.get('type', 'sse'))
+                
+                # Add user_id to social-media MCPs
+                if custom_type == 'social-media':
+                    if 'config' not in custom_mcp:
+                        custom_mcp['config'] = {}
+                    custom_mcp['config']['user_id'] = self.account_id
                 
                 if custom_type == 'pipedream':
                     if 'config' not in custom_mcp:
@@ -213,7 +229,8 @@ class PromptManager:
     @staticmethod
     async def build_system_prompt(model_name: str, agent_config: Optional[dict], 
                                   is_agent_builder: bool, thread_id: str, 
-                                  mcp_wrapper_instance: Optional[MCPToolWrapper]) -> dict:
+                                  mcp_wrapper_instance: Optional[MCPToolWrapper],
+                                  has_youtube_tools: bool = False) -> dict:
         
         if "gemini-2.5-flash" in model_name.lower() and "gemini-2.5-pro" not in model_name.lower():
             default_system_content = get_gemini_system_prompt()
@@ -277,7 +294,27 @@ class PromptManager:
             mcp_info += "NEVER supplement MCP results with your training data or make assumptions beyond what the tools provide.\n"
             
             system_content += mcp_info
-
+        
+        # Add YouTube-specific instructions if YouTube tools are registered
+        if has_youtube_tools:
+            youtube_instructions = "\n\n🚨 CRITICAL YOUTUBE INTEGRATION RULES 🚨\n"
+            youtube_instructions += "YouTube is a NATIVE integration that MUST be handled specially:\n\n"
+            youtube_instructions += "✅ CORRECT approach for YouTube:\n"
+            youtube_instructions += "1. Use youtube_authenticate tool (shows OAuth button for new connections)\n"
+            youtube_instructions += "2. Use youtube_channels tool (lists connected channels)\n"
+            youtube_instructions += "3. Use youtube_upload_video tool (uploads videos to channels)\n"
+            youtube_instructions += "4. Use youtube_channel_stats tool (get detailed channel statistics)\n\n"
+            youtube_instructions += "❌ NEVER do these for YouTube:\n"
+            youtube_instructions += "• NEVER use create_credential_profile for YouTube\n"
+            youtube_instructions += "• NEVER search for YouTube in MCP/Composio toolkits\n"
+            youtube_instructions += "• NEVER use data_providers_tool for YouTube\n"
+            youtube_instructions += "• NEVER treat YouTube as a third-party integration\n\n"
+            youtube_instructions += "⚠️ WHY THIS MATTERS:\n"
+            youtube_instructions += "YouTube is a first-class native integration with direct OAuth.\n"
+            youtube_instructions += "Using the native tools provides better security and functionality.\n\n"
+            youtube_instructions += "When user mentions YouTube, IMMEDIATELY use youtube_channels or youtube_authenticate!\n"
+            system_content += youtube_instructions
+        
         return {"role": "system", "content": system_content}
 
 
@@ -385,11 +422,41 @@ class AgentRunner:
 
         project_data = project.data[0]
         sandbox_info = project_data.get('sandbox', {})
+        
+        # Handle case where sandbox is stored as JSON string
+        if isinstance(sandbox_info, str):
+            try:
+                import json
+                sandbox_info = json.loads(sandbox_info)
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse sandbox JSON for project {self.config.project_id}")
+                sandbox_info = {}
+        
         if not sandbox_info.get('id'):
-            raise ValueError(f"No sandbox found for project {self.config.project_id}")
+            logger.warning(f"No sandbox found for project {self.config.project_id}, continuing without sandbox tools")
     
     async def setup_tools(self):
-        tool_manager = ToolManager(self.thread_manager, self.config.project_id, self.config.thread_id)
+        # YouTube channels are now handled through MCP system
+        # But we still track them for the system prompt
+        youtube_channels = []
+        if self.config.agent_config:
+            custom_mcps = self.config.agent_config.get('custom_mcps', [])
+            for mcp in custom_mcps:
+                if mcp.get('customType') == 'social-media' and mcp.get('platform') == 'youtube':
+                    qualified_name = mcp.get('qualifiedName', '')
+                    if qualified_name.startswith('social.youtube.'):
+                        channel_id = qualified_name.replace('social.youtube.', '')
+                        if channel_id:
+                            youtube_channels.append(channel_id)
+        
+        self.tool_manager = ToolManager(
+            self.thread_manager, 
+            self.config.project_id, 
+            self.config.thread_id,
+            user_id=self.account_id if hasattr(self, 'account_id') else None,
+            youtube_channels=youtube_channels
+        )
+        tool_manager = self.tool_manager  # Keep local reference for backward compatibility
         
         if self.config.agent_config and self.config.agent_config.get('is_suna_default', False):
             suna_agent_id = self.config.agent_config['agent_id']
@@ -437,25 +504,57 @@ class AgentRunner:
     
     async def run(self) -> AsyncGenerator[Dict[str, Any], None]:
         await self.setup()
-        await self.setup_tools()
-        mcp_wrapper_instance = await self.setup_mcp_tools()
-        
-        system_message = await PromptManager.build_system_prompt(
-            self.config.model_name, self.config.agent_config, 
-            self.config.is_agent_builder, self.config.thread_id, 
-            mcp_wrapper_instance
-        )
+        # Tool setup will happen after checking web search preference
+        mcp_wrapper_instance = None
+        system_message = None
 
         iteration_count = 0
         continue_execution = True
 
+        # Check for web search preference from latest user message
+        web_search_enabled = True  # Default
         latest_user_message = await self.client.table('messages').select('*').eq('thread_id', self.config.thread_id).eq('type', 'user').order('created_at', desc=True).limit(1).execute()
         if latest_user_message.data and len(latest_user_message.data) > 0:
             data = latest_user_message.data[0]['content']
             if isinstance(data, str):
                 data = json.loads(data)
+            
+            # Check for web search preference in message metadata
+            message_metadata = latest_user_message.data[0].get('metadata', {})
+            if isinstance(message_metadata, str):
+                try:
+                    message_metadata = json.loads(message_metadata)
+                except:
+                    message_metadata = {}
+            
+            # Set web search preference (default to True if not specified)
+            web_search_enabled = message_metadata.get('enable_web_search', True)
+            
             if self.config.trace:
                 self.config.trace.update(input=data['content'])
+        
+        # Now setup tools with web search preference
+        await self.setup_tools()
+        self.tool_manager.web_search_enabled = web_search_enabled
+        mcp_wrapper_instance = await self.setup_mcp_tools()
+        
+        # Check if YouTube tools are registered through MCP
+        has_youtube_tools = False
+        if mcp_wrapper_instance and hasattr(mcp_wrapper_instance, '_custom_tools'):
+            for tool_name in mcp_wrapper_instance._custom_tools:
+                if tool_name.startswith('youtube_'):
+                    has_youtube_tools = True
+                    break
+        
+        # Build system message after tools are set up
+        system_message = await PromptManager.build_system_prompt(
+            self.config.model_name, self.config.agent_config, 
+            self.config.is_agent_builder, self.config.thread_id, 
+            mcp_wrapper_instance,
+            has_youtube_tools=has_youtube_tools
+        )
+        
+        logger.debug(f"Web search enabled: {web_search_enabled}")
 
         message_manager = MessageManager(self.client, self.config.thread_id, self.config.model_name, self.config.trace)
 

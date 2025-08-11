@@ -69,6 +69,8 @@ class MCPToolExecutor:
                 
         elif custom_type == 'pipedream':
             return await self._execute_pipedream_tool(tool_name, arguments, tool_info)
+        elif custom_type == 'social-media':
+            return await self._execute_social_media_tool(tool_name, arguments, tool_info)
         elif custom_type == 'sse':
             return await self._execute_sse_tool(tool_name, arguments, tool_info)
         elif custom_type == 'http':
@@ -77,6 +79,74 @@ class MCPToolExecutor:
             return await self._execute_json_tool(tool_name, arguments, tool_info)
         else:
             return self._create_error_result(f"Unsupported custom MCP type: {custom_type}")
+    
+    async def _execute_social_media_tool(self, tool_name: str, arguments: Dict[str, Any], tool_info: Dict[str, Any]) -> ToolResult:
+        """Execute social media tools (YouTube, etc.) using native integrations"""
+        custom_config = tool_info['custom_config']
+        platform = custom_config.get('platform', 'youtube')
+        
+        if platform == 'youtube':
+            # Import YouTube tool
+            from agent.tools.youtube_tool import YouTubeTool
+            
+            # Get user_id from tool_wrapper's config (passed during agent initialization)
+            user_id = None
+            if self.tool_wrapper and hasattr(self.tool_wrapper, 'mcp_configs'):
+                for config in self.tool_wrapper.mcp_configs:
+                    if config.get('customType') == 'social-media' and config.get('platform') == 'youtube':
+                        user_id = config.get('config', {}).get('user_id')
+                        break
+            
+            if not user_id:
+                # Try to get from custom_config
+                user_id = custom_config.get('user_id')
+            
+            if not user_id:
+                return self._create_error_result("Missing user_id for YouTube tool")
+            
+            # Extract channel IDs from all YouTube MCPs
+            channel_ids = []
+            if self.tool_wrapper and hasattr(self.tool_wrapper, 'mcp_configs'):
+                for config in self.tool_wrapper.mcp_configs:
+                    if config.get('customType') == 'social-media' and config.get('platform') == 'youtube':
+                        qualified_name = config.get('qualifiedName', '')
+                        if qualified_name.startswith('social.youtube.'):
+                            channel_id = qualified_name.replace('social.youtube.', '')
+                            if channel_id:
+                                channel_ids.append(channel_id)
+            
+            try:
+                # Create YouTube tool instance
+                youtube_tool = YouTubeTool(user_id=user_id, channel_ids=channel_ids)
+                
+                # Map tool names to methods
+                if tool_name == 'youtube_authenticate':
+                    result = await youtube_tool.youtube_authenticate()
+                elif tool_name == 'youtube_channels':
+                    result = await youtube_tool.youtube_channels()
+                elif tool_name == 'youtube_upload_video':
+                    result = await youtube_tool.youtube_upload_video(
+                        title=arguments.get('title'),
+                        description=arguments.get('description', ''),
+                        file_path=arguments.get('file_path'),
+                        channel_id=arguments.get('channel_id'),
+                        tags=arguments.get('tags', []),
+                        privacy=arguments.get('privacy', 'private')
+                    )
+                elif tool_name == 'youtube_channel_stats':
+                    result = await youtube_tool.youtube_channel_stats(
+                        channel_ids=arguments.get('channel_ids', channel_ids)
+                    )
+                else:
+                    return self._create_error_result(f"Unknown YouTube tool: {tool_name}")
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error executing YouTube tool {tool_name}: {str(e)}")
+                return self._create_error_result(f"Error executing YouTube tool: {str(e)}")
+        else:
+            return self._create_error_result(f"Unsupported social media platform: {platform}")
     
     async def _execute_pipedream_tool(self, tool_name: str, arguments: Dict[str, Any], tool_info: Dict[str, Any]) -> ToolResult:
         custom_config = tool_info['custom_config']

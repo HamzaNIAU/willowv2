@@ -20,6 +20,13 @@ class ToolkitInfo(BaseModel):
 
 
 class ToolkitService:
+    # Social media platforms that should use native integrations
+    BLOCKED_SOCIAL_MEDIA_TOOLKITS = {
+        'youtube', 'instagram', 'twitter', 'x', 'facebook', 
+        'linkedin', 'tiktok', 'pinterest', 'snapchat', 'reddit',
+        'twitch', 'discord'
+    }
+    
     def __init__(self, api_key: Optional[str] = None):
         self.client = ComposioClient.get_client(api_key)
     
@@ -69,6 +76,12 @@ class ToolkitService:
                 auth_schemes = toolkit_data.get("auth_schemes", [])
 
                 if "OAUTH2" not in auth_schemes:
+                    continue
+                
+                # Skip social media toolkits - they use native integrations
+                toolkit_slug = toolkit_data.get("slug", "").lower()
+                if toolkit_slug in self.BLOCKED_SOCIAL_MEDIA_TOOLKITS:
+                    logger.debug(f"Skipping social media toolkit: {toolkit_slug}")
                     continue
                 
                 logo_url = None
@@ -126,6 +139,11 @@ class ToolkitService:
     
     async def get_toolkit_by_slug(self, slug: str) -> Optional[ToolkitInfo]:
         try:
+            # Check if this is a blocked social media toolkit
+            if slug.lower() in self.BLOCKED_SOCIAL_MEDIA_TOOLKITS:
+                logger.warning(f"Toolkit '{slug}' is a social media platform. Use native Social Media integrations instead.")
+                return None
+            
             toolkits = await self.list_toolkits()
             for toolkit in toolkits:
                 if toolkit.slug == slug:
@@ -137,6 +155,11 @@ class ToolkitService:
     
     async def search_toolkits(self, query: str, category: Optional[str] = None) -> List[ToolkitInfo]:
         try:
+            # Don't return social media toolkits in search results
+            if query.lower() in self.BLOCKED_SOCIAL_MEDIA_TOOLKITS:
+                logger.info(f"Search query '{query}' is for a social media platform. Returning empty results.")
+                return []
+            
             toolkits = await self.list_toolkits(category=category)
             query_lower = query.lower()
             

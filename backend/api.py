@@ -192,6 +192,10 @@ api_router.include_router(admin_api.router)
 from composio_integration import api as composio_api
 api_router.include_router(composio_api.router)
 
+from youtube_mcp import api as youtube_api
+youtube_api.initialize(db)
+api_router.include_router(youtube_api.router)
+
 @api_router.get("/health")
 async def health_check():
     logger.info("Health check endpoint called")

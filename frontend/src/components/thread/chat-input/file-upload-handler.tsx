@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/tooltip';
 import { UploadedFile } from './chat-input';
 import { normalizeFilenameToNFC } from '@/lib/utils/unicode';
+import { isVideoFile, handleYouTubeVideoUpload, YouTubeUploadReference } from './youtube-upload-handler';
 
 const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
@@ -159,7 +160,46 @@ const handleFiles = async (
   setIsUploading: React.Dispatch<React.SetStateAction<boolean>>,
   messages: any[] = [], // Add messages parameter
   queryClient?: any, // Add queryClient parameter
+  onYouTubeVideos?: (references: YouTubeUploadReference[]) => void, // Add YouTube callback
 ) => {
+  // Check for video files and handle YouTube uploads
+  const videoFiles = files.filter(isVideoFile);
+  const otherFiles = files.filter(file => !isVideoFile(file));
+  
+  // If we have video files and they might be for YouTube
+  if (videoFiles.length > 0) {
+    // Check if the conversation mentions YouTube
+    const hasYouTubeContext = messages.some(msg => {
+      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      return content.toLowerCase().includes('youtube') || content.toLowerCase().includes('upload video');
+    });
+    
+    if (hasYouTubeContext) {
+      // Prepare videos for YouTube upload
+      handleYouTubeVideoUpload(videoFiles, onYouTubeVideos).then(references => {
+        if (references.length > 0) {
+          // Add a special uploaded file entry to indicate YouTube videos are ready
+          const youtubeFiles: UploadedFile[] = references.map(ref => ({
+            name: ref.fileName,
+            path: `[YouTube Video: ${ref.fileName} (Reference: ${ref.referenceId})]`,
+            size: 0, // Size is in the reference
+            type: 'video/youtube-reference',
+            localUrl: undefined
+          }));
+          setUploadedFiles(prev => [...prev, ...youtubeFiles]);
+        }
+      });
+      
+      // Continue processing other non-video files
+      files = otherFiles;
+    }
+  }
+  
+  // If no files left after YouTube processing, return
+  if (files.length === 0 && otherFiles.length === 0 && videoFiles.length > 0) {
+    return;
+  }
+  
   if (sandboxId) {
     // If we have a sandboxId, upload files directly
     await uploadFiles(files, sandboxId, setUploadedFiles, setIsUploading, messages, queryClient);

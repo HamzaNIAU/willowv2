@@ -45,9 +45,13 @@ class ComposioIntegrationService:
         try:
             logger.info(f"Starting Composio integration for toolkit: {toolkit_slug}")
             
+            # Check if this is a social media toolkit
+            if toolkit_slug.lower() in ToolkitService.BLOCKED_SOCIAL_MEDIA_TOOLKITS:
+                raise ValueError(f"Social media platform '{toolkit_slug}' should use native Social Media integrations. Please go to the Social Media page to connect your accounts.")
+            
             toolkit = await self.toolkit_service.get_toolkit_by_slug(toolkit_slug)
             if not toolkit:
-                raise ValueError(f"Toolkit '{toolkit_slug}' not found")
+                raise ValueError(f"Toolkit '{toolkit_slug}' not found or is a social media platform")
             
             logger.info(f"Step 1 complete: Verified toolkit {toolkit_slug}")
             

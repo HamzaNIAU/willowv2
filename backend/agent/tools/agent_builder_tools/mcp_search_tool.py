@@ -61,6 +61,7 @@ class MCPSearchTool(AgentBuilderBaseTool):
                 toolkits = toolkits[:limit]
             
             formatted_toolkits = []
+            
             for toolkit in toolkits:
                 formatted_toolkits.append({
                     "name": toolkit.name,

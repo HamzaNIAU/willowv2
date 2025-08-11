@@ -37,6 +37,15 @@ class SandboxToolsBase(Tool):
                 project_data = project.data[0]
                 sandbox_info = project_data.get('sandbox', {})
                 
+                # Handle case where sandbox is stored as JSON string
+                if isinstance(sandbox_info, str):
+                    try:
+                        import json
+                        sandbox_info = json.loads(sandbox_info)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse sandbox JSON for project {self.project_id}")
+                        sandbox_info = {}
+                
                 if not sandbox_info.get('id'):
                     raise ValueError(f"No sandbox found for project {self.project_id}")
                 

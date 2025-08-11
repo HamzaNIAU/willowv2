@@ -259,7 +259,8 @@ export function DashboardContent() {
               hideAttachments={false}
               selectedAgentId={selectedAgentId}
               onAgentSelect={setSelectedAgentId}
-              enableAdvancedConfig={true}
+              enableAdvancedConfig={false}
+              hideAgentSelection={true}
               onConfigureAgent={(agentId) => router.push(`/agents/config/${agentId}`)}
             />
           </div>

@@ -40,8 +40,7 @@ async def get_account_id_from_user_id(user_id: str) -> UUID:
 
         # Query the basejump.accounts table for the user's primary account
         result = (
-            await client.schema("basejump")
-            .table("accounts")
+            await client.table("accounts")
             .select("id")
             .eq("primary_owner_user_id", user_id)
             .eq("personal_account", True)  # Get the user's personal account

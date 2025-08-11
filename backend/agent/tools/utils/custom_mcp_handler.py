@@ -51,6 +51,8 @@ class CustomMCPHandler:
             await self._initialize_composio_mcp(server_name, server_config, enabled_tools)
         elif custom_type == 'pipedream':
             await self._initialize_pipedream_mcp(server_name, server_config, enabled_tools)
+        elif custom_type == 'social-media':
+            await self._initialize_social_media_mcp(server_name, server_config, enabled_tools, config)
         elif custom_type == 'sse':
             await self._initialize_sse_mcp(server_name, server_config, enabled_tools)
         elif custom_type == 'http':
@@ -87,6 +89,106 @@ class CustomMCPHandler:
             
         except Exception as e:
             logger.error(f"Failed to initialize Composio MCP {server_name}: {str(e)}")
+    
+    async def _initialize_social_media_mcp(self, server_name: str, server_config: Dict[str, Any], enabled_tools: List[str], full_config: Dict[str, Any]):
+        """Initialize social media MCP (YouTube, etc.) using native integrations"""
+        platform = full_config.get('platform', 'youtube')
+        
+        if platform == 'youtube':
+            # Extract channel ID from qualifiedName (format: social.youtube.{channel_id})
+            qualified_name = full_config.get('qualifiedName', '')
+            channel_id = None
+            if qualified_name.startswith('social.youtube.'):
+                channel_id = qualified_name.replace('social.youtube.', '')
+            
+            # Define YouTube tools
+            youtube_tools = [
+                {
+                    'name': 'youtube_authenticate',
+                    'description': 'Authenticate with YouTube to connect your account',
+                    'inputSchema': {
+                        'type': 'object',
+                        'properties': {},
+                        'required': []
+                    }
+                },
+                {
+                    'name': 'youtube_channels',
+                    'description': 'List all connected YouTube channels',
+                    'inputSchema': {
+                        'type': 'object',
+                        'properties': {},
+                        'required': []
+                    }
+                },
+                {
+                    'name': 'youtube_upload_video',
+                    'description': 'Upload a video to YouTube',
+                    'inputSchema': {
+                        'type': 'object',
+                        'properties': {
+                            'title': {'type': 'string', 'description': 'Video title'},
+                            'description': {'type': 'string', 'description': 'Video description'},
+                            'file_path': {'type': 'string', 'description': 'Path to video file'},
+                            'channel_id': {'type': 'string', 'description': 'YouTube channel ID'},
+                            'tags': {
+                                'type': 'array',
+                                'items': {'type': 'string'},
+                                'description': 'Video tags'
+                            },
+                            'privacy': {
+                                'type': 'string',
+                                'enum': ['public', 'private', 'unlisted'],
+                                'description': 'Video privacy setting'
+                            }
+                        },
+                        'required': ['title', 'file_path']
+                    }
+                },
+                {
+                    'name': 'youtube_channel_stats',
+                    'description': 'Get statistics for YouTube channels',
+                    'inputSchema': {
+                        'type': 'object',
+                        'properties': {
+                            'channel_ids': {
+                                'type': 'array',
+                                'items': {'type': 'string'},
+                                'description': 'List of channel IDs to get stats for'
+                            }
+                        },
+                        'required': []
+                    }
+                }
+            ]
+            
+            # Register YouTube tools
+            tools_registered = 0
+            for tool_info in youtube_tools:
+                tool_name_from_server = tool_info['name']
+                if not enabled_tools or tool_name_from_server in enabled_tools:
+                    # Use the original tool name for YouTube tools (no custom_ prefix)
+                    tool_name = tool_name_from_server
+                    self.custom_tools[tool_name] = {
+                        'name': tool_name,
+                        'description': tool_info['description'],
+                        'parameters': tool_info['inputSchema'],
+                        'server': server_name,
+                        'original_name': tool_name_from_server,
+                        'is_custom': True,
+                        'custom_type': 'social-media',
+                        'custom_config': {
+                            'platform': platform,
+                            'channel_id': channel_id,
+                            'user_id': server_config.get('user_id')
+                        }
+                    }
+                    tools_registered += 1
+                    logger.debug(f"Registered YouTube tool: {tool_name}")
+            
+            logger.info(f"Successfully initialized YouTube MCP {server_name} with {tools_registered} tools (channel: {channel_id})")
+        else:
+            logger.error(f"Unsupported social media platform: {platform}")
     
     async def _initialize_pipedream_mcp(self, server_name: str, server_config: Dict[str, Any], enabled_tools: List[str]):
         app_slug = server_config.get('app_slug')

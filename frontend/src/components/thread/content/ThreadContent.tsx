@@ -765,23 +765,24 @@ export const ThreadContent: React.FC<ThreadContentProps> = ({
 
                                                                         if (!parsedContent.content) return;
 
+                                                                        // Render normal markdown content
                                                                         const renderedContent = renderMarkdownContent(
-                                                                            parsedContent.content,
-                                                                            handleToolClick,
-                                                                            message.message_id,
-                                                                            handleOpenFileViewer,
-                                                                            sandboxId,
-                                                                            project,
-                                                                            debugMode
-                                                                        );
+                                                                                parsedContent.content,
+                                                                                handleToolClick,
+                                                                                message.message_id,
+                                                                                handleOpenFileViewer,
+                                                                                sandboxId,
+                                                                                project,
+                                                                                debugMode
+                                                                            );
 
-                                                                        elements.push(
-                                                                            <div key={msgKey} className={assistantMessageCount > 0 ? "mt-4" : ""}>
-                                                                                <div className="prose prose-sm dark:prose-invert chat-markdown max-w-none [&>:first-child]:mt-0 prose-headings:mt-3 break-words overflow-hidden">
-                                                                                    {renderedContent}
+                                                                            elements.push(
+                                                                                <div key={msgKey} className={assistantMessageCount > 0 ? "mt-4" : ""}>
+                                                                                    <div className="prose prose-sm dark:prose-invert chat-markdown max-w-none [&>:first-child]:mt-0 prose-headings:mt-3 break-words overflow-hidden">
+                                                                                        {renderedContent}
+                                                                                    </div>
                                                                                 </div>
-                                                                            </div>
-                                                                        );
+                                                                            );
 
                                                                         assistantMessageCount++; // Increment after adding the element
                                                                     }

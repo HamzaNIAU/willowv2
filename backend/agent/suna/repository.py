@@ -237,7 +237,7 @@ class SunaAgentRepository:
     async def get_all_personal_accounts(self) -> List[str]:
         try:
             client = await self.db.client
-            result = await client.schema('basejump').table('accounts').select(
+            result = await client.table('accounts').select(
                 'id'
             ).eq('personal_account', True).execute()
             

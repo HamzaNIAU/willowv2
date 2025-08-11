@@ -215,8 +215,81 @@ export function NavAgents() {
     // Close dialog first for immediate feedback
     setIsDeleteDialogOpen(false);
 
-    // Check if it's a single thread or multiple threads
-    if (threadToDelete.id !== "multiple") {
+    // Check if it's a single thread, multiple threads, or all threads
+    if (threadToDelete.id === "all") {
+      // Delete all threads
+      const allThreadIds = combinedThreads.map(thread => thread.threadId);
+      const isActiveThreadIncluded = allThreadIds.some(id => pathname?.includes(id));
+
+      // Show initial toast
+      toast.info(`Deleting all ${allThreadIds.length} conversations...`);
+
+      try {
+        // If the active thread is included, handle navigation first
+        if (isActiveThreadIncluded) {
+          // Navigate to dashboard before deleting
+          isNavigatingRef.current = true;
+          document.body.style.pointerEvents = 'none';
+          router.push('/dashboard');
+
+          // Wait a moment for navigation to start
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        // Use the mutation for bulk deletion
+        deleteMultipleThreadsMutation(
+          {
+            threadIds: allThreadIds,
+            threadSandboxMap: Object.fromEntries(
+              allThreadIds.map(threadId => {
+                const thread = combinedThreads.find(t => t.threadId === threadId);
+                const project = projects.find(p => p.id === thread?.projectId);
+                return [threadId, project?.sandbox?.id || ''];
+              }).filter(([, sandboxId]) => sandboxId)
+            ),
+            onProgress: handleDeletionProgress
+          },
+          {
+            onSuccess: (data) => {
+              // Invalidate queries to refresh the list
+              queryClient.invalidateQueries({ queryKey: threadKeys.lists() });
+
+              // Show success message
+              toast.success(`Successfully deleted all ${data.successful.length} conversations`);
+
+              // If some deletions failed, show warning
+              if (data.failed.length > 0) {
+                toast.warning(`Failed to delete ${data.failed.length} conversations`);
+              }
+
+              // Reset states
+              setSelectedThreads(new Set());
+              setDeleteProgress(0);
+              setTotalToDelete(0);
+            },
+            onError: (error) => {
+              console.error('Error in bulk deletion:', error);
+              toast.error('Error deleting all conversations');
+            },
+            onSettled: () => {
+              setThreadToDelete(null);
+              isPerformingActionRef.current = false;
+              setDeleteProgress(0);
+              setTotalToDelete(0);
+            }
+          }
+        );
+      } catch (err) {
+        console.error('Error initiating bulk deletion:', err);
+        toast.error('Error initiating deletion process');
+
+        // Reset states
+        setThreadToDelete(null);
+        isPerformingActionRef.current = false;
+        setDeleteProgress(0);
+        setTotalToDelete(0);
+      }
+    } else if (threadToDelete.id !== "multiple") {
       // Single thread deletion
       const threadId = threadToDelete.id;
       const isActive = pathname?.includes(threadId);
@@ -348,6 +421,20 @@ export function NavAgents() {
     console.error('Error loading data:', { projectsError, threadsError });
   }
 
+  // Function to handle delete all threads
+  const handleDeleteAll = () => {
+    if (combinedThreads.length === 0) return;
+    
+    setThreadToDelete({
+      id: "all",
+      name: `all ${combinedThreads.length} conversations`
+    });
+    
+    setTotalToDelete(combinedThreads.length);
+    setDeleteProgress(0);
+    setIsDeleteDialogOpen(true);
+  };
+
   return (
     <SidebarGroup>
       <div className="flex justify-between items-center">
@@ -382,7 +469,26 @@ export function NavAgents() {
                   <Trash2 className="h-4 w-4" />
                 </Button>
               </>
-            ) : null}
+            ) : (
+              // Show delete all button when no items are selected
+              combinedThreads.length > 0 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleDeleteAll}
+                      className="h-7 w-7 hover:text-destructive transition-colors"
+                    >
+                      <History className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" align="end">
+                    Delete all history
+                  </TooltipContent>
+                </Tooltip>
+              )
+            )}
           </div>
         ) : null}
       </div>

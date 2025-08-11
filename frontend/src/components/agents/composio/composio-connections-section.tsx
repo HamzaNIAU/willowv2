@@ -33,8 +33,9 @@ import {
   Plus,
   CheckCircle2,
   XCircle,
+  Trash2,
 } from 'lucide-react';
-import { useComposioCredentialsProfiles, useComposioMcpUrl } from '@/hooks/react-query/composio/use-composio-profiles';
+import { useComposioCredentialsProfiles, useComposioMcpUrl, useDeleteComposioProfile } from '@/hooks/react-query/composio/use-composio-profiles';
 import { ComposioRegistry } from './composio-registry';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -212,9 +213,16 @@ const ToolkitTable: React.FC<ToolkitTableProps> = ({ toolkit }) => {
     profileName: string;
     toolkitName: string;
   } | null>(null);
+  const deleteProfile = useDeleteComposioProfile();
 
   const handleViewUrl = (profileId: string, profileName: string, toolkitName: string) => {
     setSelectedProfile({ profileId, profileName, toolkitName });
+  };
+
+  const handleDeleteProfile = (profileId: string, profileName: string) => {
+    if (confirm(`Are you sure you want to delete the profile "${profileName}"? This action cannot be undone.`)) {
+      deleteProfile.mutate(profileId);
+    }
   };
 
   const columns: DataTableColumn<ComposioProfileSummary>[] = [
@@ -223,13 +231,22 @@ const ToolkitTable: React.FC<ToolkitTableProps> = ({ toolkit }) => {
       header: 'Profile Name',
       width: 'w-1/3',
       cell: (profile) => (
-        <div className="flex items-center gap-2">
-          <span className="font-medium">{profile.profile_name}</span>
-          {profile.is_default && (
-            <span title="Default profile">
-              <Crown className="h-4 w-4 text-amber-500" />
-            </span>
-          )}
+        <div className="flex items-center gap-3">
+          {/* Profile pictures removed - social media uses native integrations */}
+          <div className="flex flex-col">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">
+                {/* Show profile name */}
+                {profile.profile_name}
+              </span>
+              {profile.is_default && (
+                <span title="Default profile">
+                  <Crown className="h-4 w-4 text-amber-500" />
+                </span>
+              )}
+            </div>
+            {/* Metadata removed - social media uses native integrations */}
+          </div>
         </div>
       ),
     },
@@ -311,6 +328,14 @@ const ToolkitTable: React.FC<ToolkitTableProps> = ({ toolkit }) => {
               <DropdownMenuItem>
                 <CheckCircle2 className="h-4 w-4" />
                 {profile.is_default ? 'Remove Default' : 'Set as Default'}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem 
+                onClick={() => handleDeleteProfile(profile.profile_id, profile.profile_name)}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete Profile
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -453,23 +478,38 @@ export const ComposioConnectionsSection: React.FC<ComposioConnectionsSectionProp
 
   if (!toolkits || toolkits.length === 0) {
     return (
-      <div className={cn("space-y-6", className)}>
-        <Card className="border-dashed">
-          <CardContent className="py-12">
-            <div className="text-center">
-              <Settings className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-lg font-medium mb-2">No Connections</h3>
-              <p className="text-muted-foreground mb-4">
-                You haven't connected any applications yet.
-              </p>
-              <Button variant="outline" onClick={() => setShowRegistry(true)}>
-                <Plus className="h-4 w-4" />
-                Connect Apps
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <>
+        <div className={cn("space-y-6", className)}>
+          <Card className="border-dashed">
+            <CardContent className="py-12">
+              <div className="text-center">
+                <Settings className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-medium mb-2">No Connections</h3>
+                <p className="text-muted-foreground mb-4">
+                  Connect your favorite apps to enhance Suna's capabilities.
+                </p>
+                <Button variant="outline" onClick={() => setShowRegistry(true)}>
+                  <Plus className="h-4 w-4" />
+                  Connect Apps
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Dialog open={showRegistry} onOpenChange={setShowRegistry}>
+          <DialogContent className="p-0 max-w-6xl h-[90vh] overflow-hidden">
+            <DialogHeader className="sr-only">
+              <DialogTitle>Connect New App</DialogTitle>
+            </DialogHeader>
+            <ComposioRegistry
+              mode="profile-only"
+              onClose={() => setShowRegistry(false)}
+              onToolsSelected={handleProfileCreated}
+            />
+          </DialogContent>
+        </Dialog>
+      </>
     );
   }
 

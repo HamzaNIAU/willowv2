@@ -18,7 +18,7 @@ import { useFileDelete } from '@/hooks/react-query/files';
 import { useQueryClient } from '@tanstack/react-query';
 import { ToolCallInput } from './floating-tool-preview';
 import { ChatSnack } from './chat-snack';
-import { Brain, Zap, Workflow, Database, ArrowDown } from 'lucide-react';
+import { Brain, Zap, Workflow, Database, ArrowDown, Search } from 'lucide-react';
 import { FaGoogle, FaDiscord } from 'react-icons/fa';
 import { SiNotion } from 'react-icons/si';
 import { AgentConfigModal } from '@/components/agents/agent-config-modal';
@@ -137,6 +137,7 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
     const [showSnackbar, setShowSnackbar] = useState(defaultShowSnackbar);
     const [userDismissedUsage, setUserDismissedUsage] = useState(false);
     const [billingModalOpen, setBillingModalOpen] = useState(false);
+    const [webSearchEnabled, setWebSearchEnabled] = useState(true);
 
     const {
       selectedModel,
@@ -285,6 +286,7 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
       onSubmit(message, {
         model_name: baseModelName,
         enable_thinking: thinkingEnabled,
+        enable_web_search: webSearchEnabled,
       });
 
       if (!isControlled) {
@@ -521,6 +523,20 @@ export const ChatInput = forwardRef<ChatInputHandles, ChatInputProps>(
                       >
                         <Workflow className="h-3.5 w-3.5 flex-shrink-0" />
                         <span className="text-xs font-medium">Workflows</span>
+                      </button>
+
+                      <div className="w-px h-4 bg-border/60" />
+
+                      <button
+                        onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                        className={`flex items-center gap-1.5 transition-all duration-200 px-2.5 py-1.5 rounded-md border flex-shrink-0 ${
+                          webSearchEnabled 
+                            ? 'text-foreground bg-primary/10 border-primary/30 hover:bg-primary/20' 
+                            : 'text-muted-foreground hover:text-foreground hover:bg-muted/50 border-transparent hover:border-border/30'
+                        }`}
+                      >
+                        <Search className="h-3.5 w-3.5 flex-shrink-0" />
+                        <span className="text-xs font-medium">Web Search</span>
                       </button>
                     </div>
                   </div>

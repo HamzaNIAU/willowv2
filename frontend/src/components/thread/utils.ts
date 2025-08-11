@@ -318,7 +318,6 @@ const TOOL_DISPLAY_NAMES = new Map([
   ['browser-wait', 'Waiting'],
 
   ['execute-data-provider-call', 'Calling data provider'],
-  ['execute_data-provider_call', 'Calling data provider'],
   ['get-data-provider-endpoints', 'Getting endpoints'],
   
   ['deploy', 'Deploying'],
